@@ -1,6 +1,6 @@
 # VULTRagent
 
-> **新增内容（Round 2）**：接入 Vultr API，实现实例列表、实例选择持久化与详情查看，并补充环境变量与常见错误说明。
+> **新增内容（Round 3）**：实现一键远端环境部署脚本、健康检查报告与 Hugging Face 持久登录配置，并完善常见问题。
 
 ## 项目简介与目标
 VULTRagent 旨在通过本地命令行工具自动化管理 Vultr VPS，主要用于远程部署与执行语音识别（ASR）任务。本轮构建了基础代码骨架，后续将逐步完善实际功能。
@@ -11,7 +11,7 @@ VULTRagent 旨在通过本地命令行工具自动化管理 Vultr VPS，主要�
 2. 选择当前实例并保存（写入 `.state.json`）
 3. 查看当前实例详情（实时请求 API）
 4. 连接并测试 SSH（占位）
-5. 一键环境部署/检查（远端，占位）
+5. 一键环境部署/检查（远端脚本，包含健康检查与 Hugging Face 可选登录）
 6. 部署/更新 ASR 仓库到远端（占位）
 7. 上传本地素材到远端输入目录（占位）
 8. 在 tmux 中后台运行 `asr_quickstart.py`（占位）
@@ -26,12 +26,12 @@ VULTRagent/
 ├── main.py                  # 命令行入口，加载菜单并调用核心模块
 ├── core/
 │   ├── vultr_api.py         # Vultr API 封装（实例列表、详情、重试逻辑）
-│   ├── remote_exec.py       # SSH / tmux / 日志操作占位逻辑
+│   ├── remote_exec.py       # SSH / 文件上传封装与后续扩展占位
 │   ├── file_transfer.py     # 文件传输与仓库部署占位逻辑
-│   ├── remote_bootstrap.py  # 远端初始化与健康检查占位逻辑
+│   ├── remote_bootstrap.py  # 远端初始化与健康检查逻辑
 │   └── asr_runner.py        # ASR 任务执行占位逻辑
 ├── scripts/
-│   └── bootstrap_remote.sh  # 远端一键脚本（占位，Round 3 实现）
+│   └── bootstrap_remote.sh  # 远端一键脚本（幂等部署与健康检查）
 ├── config.example.yaml      # 配置模板，供用户复制修改
 ├── requirements.txt         # Python 依赖清单
 └── README.md                # 项目说明文档（本文件）
@@ -107,10 +107,47 @@ VULTRagent/
 - `git`：ASR 项目的 Git 仓库地址与默认分支。
 - `asr`：ASR 启动脚本与参数占位。
 - `transfer`：回传结果时的匹配模式。
+- `huggingface`：Round 3 新增，用于控制 token 注入与 CLI 登录行为。
+
+## 一键远端环境部署/检查
+菜单项 **5. 一键环境部署/检查** 会自动执行以下流程：
+
+1. 将本地 `scripts/bootstrap_remote.sh` 上传到远端 `/tmp/vultragentsvc_bootstrap.sh`（路径可在 `remote.bootstrap_tmp_path` 中自定义）。
+2. 通过 `ssh` 注入配置中的远端目录、日志路径、Hugging Face 选项等环境变量。
+3. 在远端执行脚本，完成以下任务：
+   - 更新包索引并安装 `git`、`git-lfs`、`python3`、`pip`、`tmux`、`rsync`、`ffmpeg`、`curl`、`ca-certificates` 等依赖；
+   - 初始化 Git LFS；
+   - 创建 `base_dir`、`project_dir`、`inputs_dir`、`outputs_dir`、`models_dir` 及日志目录；
+   - 可选执行 Hugging Face CLI 持久登录；
+   - 运行健康检查：输出 Python、pip、tmux、ffmpeg、git、磁盘空间及网络连通性状态。
+
+脚本采用 `set -euo pipefail` 并保证幂等，多次执行不会破坏现有配置。部署完成后，终端会展示类似如下的状态汇总：
+
+```
+STATUS:PYTHON:OK:Python 3.10.12
+STATUS:PIP:OK:pip 23.1.2 from /usr/lib/python3/dist-packages/pip
+STATUS:FFMPEG:OK:ffmpeg version 5.1.2-...
+STATUS:NETWORK:FAIL:网络检测失败
+STATUS:OVERALL:FAIL:环境部署与检查完成
+```
+
+`print_health_report` 会对上述状态进行解析并以彩色表格展示，清晰标记 ✅/❌。若某一步骤失败，可根据提示在远端手动排查后再次执行菜单 5，脚本会在已有基础上补齐缺失依赖。
+
+## Hugging Face 配置与安全
+`config.example.yaml` 中新增的 `huggingface` 段落支持两种工作模式：
+
+- **持久登录（`persist_login: true`）**：菜单 5 会在远端安装 `huggingface_hub[cli]` 并执行 `huggingface-cli login`，可选写入 Git Credential Helper，适合长期运行的部署。登录日志仅在失败时输出。
+- **运行时注入（`persist_login: false`）**：脚本不会在远端保存凭据。后续轮次（Round 5）会通过环境变量在执行 ASR 时临时注入 token。
+
+安全建议：
+
+- 不要将真实 token 写入仓库。请在 `config.yaml` 中手工填入，并确保 `.gitignore` 已屏蔽该文件。
+- 若怀疑 token 泄露，请立即在 Hugging Face 账户页面撤销，并生成新的访问令牌。
+- 当远端机器需要共享或回收时，执行 `huggingface-cli logout` 或清理 `~/.cache/huggingface`，以免凭据残留。
 
 ## 下一步开发计划
 - **Round 2**：已实现 Vultr 实例管理与 API 错误处理基础能力。
-- **Round 3**：实现 `bootstrap_remote.sh` 与远端初始化流程。
+- **Round 3**：已实现 `bootstrap_remote.sh`、远端环境健康检查与 Hugging Face 登录集成。
 - **Round 4**：完善 Vultr API 调用与实例管理。
 - **Round 5**：实现 SSH 执行、文件传输与 tmux 作业管理。
 - **Round 6**：整合 ASR 运行流程，支持实时日志回传。
@@ -120,3 +157,7 @@ VULTRagent/
 - **401 Unauthorized**：API Key 无效或未设置。请确认环境变量 `VULTR_API_KEY`，在 macOS/Linux 下使用 `export`，在 Windows PowerShell 下使用 `setx` 并重新打开终端。
 - **429 Too Many Requests**：触发 Vultr 限流。程序会自动指数退避重试，若仍失败请稍后再试或减少频繁操作。
 - **请求超时或网络错误**：可能是网络不稳定或 Vultr API 暂时不可用。请检查网络连通性并重试；必要时可在配置中自定义代理或稍后再访问。
+- **Permission denied (publickey)**：远端拒绝 SSH 连接。请确认 config.yaml 中的 `ssh.user` 与 `ssh.keyfile` 设置正确，并确保私钥已添加到 `ssh-agent` 或配置了 `~/.ssh/config`。
+- **git-lfs: command not found**：请重新执行菜单 5 或在远端手动运行 `git lfs install`，以初始化 Git LFS 环境。
+- **tmux: failed to connect to server**：通常是 tmux 尚未安装或缺少权限。运行菜单 5 后会自动安装；若仍失败，可检查 `$HOME/.tmux` 权限并执行 `tmux kill-server`。
+- **ffmpeg/网络检测失败**：远端脚本会标记为 FAIL。请确认系统包源可访问，并检查网络策略（如需代理可在 `.bashrc` 中设置），然后重新运行菜单 5。
