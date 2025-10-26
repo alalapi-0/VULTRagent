@@ -16,8 +16,9 @@ remote:
   bootstrap_tmp_path: "/tmp/vultragentsvc_bootstrap.sh"  # 上传脚本的临时存放路径
 
 git:
-  repo_url: "git@github.com:yourname/your-asr-repo.git"
+  repo_url: "https://github.com/yourname/your-asr-repo.git"
   branch: "main"
+  prefer_https: true         # 公共仓库推荐启用，私有仓库可设为 false 使用 SSH
 
 asr:
   entry: "asr_quickstart.py"
