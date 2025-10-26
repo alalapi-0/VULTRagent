@@ -2,12 +2,20 @@
 # 该模块负责处理文件上传、结果下载以及 Round 4 要求的远端仓库部署逻辑。
 # 导入 json 模块用于在调试时格式化输出内容。
 import json
+# 导入 os 模块以便在本地进行文件遍历和平台判断。
+import os
 # 导入 shlex 模块以确保在构建 shell 命令时进行安全转义。
 import shlex
 # 导入 subprocess 模块以执行本地外部命令（rsync 或 scp）。
 import subprocess
 # 导入 shutil 模块以检测 rsync 是否可用。
 import shutil
+# 导入 time 模块用于在重试时执行退避等待。
+import time
+# 导入 datetime 模块用于生成结果目录中的时间戳。
+from datetime import datetime
+# 导入 fnmatch 模块在 Windows 降级模式下执行本地过滤。
+from fnmatch import fnmatch
 # 导入 pathlib.Path 以处理本地路径的展开与校验。
 from pathlib import Path
 # 导入 typing 模块中的 Dict、List、Optional 以完善类型注解。
@@ -142,10 +150,387 @@ def upload_local_to_remote(
     console.print("[green][file_transfer] scp 上传完成，如需更高性能请在本地安装 rsync。[/green]")
 
 
-# 定义从远端下载结果的占位函数（后续轮次会补全真实逻辑）。
-def fetch_results_from_remote(remote_path: str, local_path: str) -> None:
-    # 目前功能尚未实现，打印提示以便调试。
-    console.print(f"[yellow][file_transfer] fetch_results_from_remote 占位调用 remote={remote_path}, local={local_path}[/yellow]")
+# 定义一个函数用于生成本地结果目录结构。
+def make_local_results_dir(results_root: str, instance_label: str, instance_id: str) -> str:
+    # 选择实例标签作为目录名，若为空则退回实例 ID。
+    label_or_id = instance_label or instance_id or "unknown"
+    # 获取当前时间戳并格式化为 YYYYMMDD-HHMMSS。
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    # 构建本地结果目录路径。
+    target_dir = Path(results_root).expanduser().resolve() / label_or_id / timestamp
+    # 创建目录并允许父级目录自动生成。
+    target_dir.mkdir(parents=True, exist_ok=True)
+    # 返回目录的字符串路径，供调用方输出或继续使用。
+    return str(target_dir)
+
+
+# 定义一个函数用于在远端生成文件清单。
+def generate_remote_manifest(
+    user: str,
+    host: str,
+    remote_dir: str,
+    manifest_path: str,
+    keyfile: Optional[str] = None,
+    pattern: Optional[str] = None,
+) -> int:
+    # 当配置了过滤模式时为 find 命令准备 -name 片段。
+    name_clause = f"-name {shlex.quote(pattern)}" if pattern else ""
+    # 构建完整的 find 命令以输出大小与相对路径，并写入清单文件。
+    command = (
+        f"find {shlex.quote(remote_dir)} -type f {name_clause} -printf '%s\\t%P\\n' "
+        f"| sort > {shlex.quote(manifest_path)}"
+    )
+    # 调用辅助函数在远端执行命令。
+    result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
+    # 若执行失败则输出提示以便排查。
+    if result["returncode"] != 0:
+        console.print(
+            f"[red][file_transfer] 生成远端清单失败，返回码 {result['returncode']}。[/red]"
+        )
+    # 返回命令退出码供上层判断是否继续。
+    return result["returncode"]
+
+
+# 定义一个内部函数用于执行单次 rsync 下载。
+def _run_rsync_download(
+    rsync_path: str,
+    ssh_command: str,
+    remote_target: str,
+    local_dir: Path,
+    pattern: Optional[str],
+) -> None:
+    # 初始化 rsync 参数列表，启用压缩、断点续传与进度展示。
+    rsync_args = [
+        rsync_path,
+        "-avz",
+        "--partial",
+        "--inplace",
+        "--progress",
+        "-e",
+        ssh_command,
+    ]
+    # 当提供了过滤模式时，使用 include/exclude 组合实现匹配。
+    if pattern:
+        rsync_args.extend(["--include", "*/", "--include", pattern, "--exclude", "*"])
+    # 将远端源路径与本地目标路径追加到参数列表。
+    rsync_args.extend([remote_target, f"{str(local_dir)}/"])
+    # 输出命令摘要帮助用户调试。
+    console.print(f"[cyan][file_transfer] 执行命令：{' '.join(rsync_args)}[/cyan]")
+    # 执行 rsync 并在失败时抛出异常。
+    subprocess.run(rsync_args, check=True)
+
+
+# 定义一个内部函数用于执行单次 scp 下载。
+def _run_scp_download(
+    user: str,
+    host: str,
+    remote_dir: str,
+    local_dir: Path,
+    keyfile: Optional[str],
+) -> None:
+    # 构造基础的 scp 参数，开启时间戳保留并递归下载。
+    scp_args = ["scp", "-p", "-r"]
+    # 若存在密钥文件则加入 -i 选项。
+    if keyfile:
+        scp_args.extend(["-i", keyfile])
+    # 组合远端源路径，使用 "." 结尾仅复制目录内容。
+    remote_source = f"{user}@{host}:{remote_dir.rstrip('/')}/."
+    # 将源与目标依次追加。
+    scp_args.extend([remote_source, str(local_dir)])
+    # 输出命令摘要便于追踪。
+    console.print(
+        f"[cyan][file_transfer] 执行命令：{' '.join(shlex.quote(arg) for arg in scp_args)}[/cyan]"
+    )
+    # 执行 scp 并在失败时抛出异常。
+    subprocess.run(scp_args, check=True)
+
+
+# 定义一个函数用于支持重试的下载流程。
+def download_with_retry(
+    user: str,
+    host: str,
+    remote_dir: str,
+    local_dir: str,
+    keyfile: Optional[str] = None,
+    pattern: Optional[str] = None,
+    retries: int = 3,
+    backoff_sec: int = 3,
+    preserve: Optional[List[str]] = None,
+) -> None:
+    # 将本地目录转换为 Path 对象并创建。
+    destination = Path(local_dir).expanduser().resolve()
+    # 确保本地目录存在，允许幂等调用。
+    destination.mkdir(parents=True, exist_ok=True)
+    # 获取 rsync 可执行文件路径以决定是否可用。
+    rsync_path = shutil.which("rsync")
+    # 当提供 preserve 列表时，表示需要在降级模式下保留特定文件（例如清单文件）。
+    preserve_set = set(preserve or [])
+    # 构建远端目标字符串，末尾保留斜杠以复制目录内容。
+    remote_target = f"{user}@{host}:{remote_dir.rstrip('/')}/"
+    # 构建 SSH 子命令，供 rsync 的 -e 选项使用。
+    ssh_parts = ["ssh", "-o", "BatchMode=yes"]
+    # 若提供了密钥文件则追加。
+    if keyfile:
+        ssh_parts.extend(["-i", keyfile])
+    # 将 SSH 参数拼接为字符串，保持逐项引用安全。
+    ssh_command = " ".join(shlex.quote(part) for part in ssh_parts)
+    # 计算允许的最大尝试次数（含首次尝试）。
+    max_attempts = max(retries, 0) + 1
+    # 逐次尝试下载直到成功或耗尽次数。
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # 当检测到 rsync 可用时优先使用。
+            if rsync_path:
+                console.print(
+                    "[green][file_transfer] 使用 rsync 同步远端结果目录。[/green]"
+                )
+                _run_rsync_download(
+                    rsync_path=rsync_path,
+                    ssh_command=ssh_command,
+                    remote_target=remote_target,
+                    local_dir=destination,
+                    pattern=pattern,
+                )
+            else:
+                # 若未检测到 rsync，则降级使用 scp。
+                console.print(
+                    "[yellow][file_transfer] 未检测到 rsync，降级为 scp -r 回传，过滤将在本地完成。[/yellow]"
+                )
+                _run_scp_download(
+                    user=user,
+                    host=host,
+                    remote_dir=remote_dir,
+                    local_dir=destination,
+                    keyfile=keyfile,
+                )
+            # 下载成功后在过滤模式下清理不匹配的文件。
+            if pattern and not rsync_path:
+                for root, _, files in os.walk(destination):
+                    for filename in files:
+                        rel_path = os.path.relpath(
+                            Path(root) / filename, destination
+                        )
+                        if preserve_set and rel_path in preserve_set:
+                            continue
+                        if not (
+                            fnmatch(rel_path, pattern)
+                            or fnmatch(os.path.basename(rel_path), pattern)
+                        ):
+                            os.remove(Path(root) / filename)
+            # 成功完成后直接返回函数。
+            return
+        except (subprocess.CalledProcessError, OSError) as exc:
+            # 当达到最大尝试次数时抛出异常。
+            if attempt >= max_attempts:
+                console.print(
+                    f"[red][file_transfer] 下载失败，已达到最大重试次数：{exc}[/red]"
+                )
+                raise
+            # 计算当前退避时长，采用指数退避策略。
+            wait_seconds = max(backoff_sec, 1) * (2 ** (attempt - 1))
+            # 输出提示信息说明即将进行的重试。
+            console.print(
+                f"[yellow][file_transfer] 下载失败，第 {attempt} 次重试将在 {wait_seconds} 秒后进行。原因：{exc}[/yellow]"
+            )
+            # 等待指定的秒数后继续下一次尝试。
+            time.sleep(wait_seconds)
+
+
+# 定义一个函数用于根据清单验证本地文件。
+def verify_local_against_manifest(local_dir: str, manifest_path: str) -> Dict[str, object]:
+    # 初始化统计结果字典。
+    result: Dict[str, object] = {
+        "ok": True,
+        "missing": [],
+        "size_mismatch": [],
+        "checked": 0,
+    }
+    # 将路径对象化便于处理。
+    base_path = Path(local_dir)
+    manifest_file = Path(manifest_path)
+    # 若清单文件不存在则标记失败。
+    if not manifest_file.exists():
+        result["ok"] = False
+        return result
+    # 逐行读取清单并验证本地文件。
+    with manifest_file.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            # 去除换行符并跳过空行。
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # 尝试拆分大小与相对路径。
+            try:
+                size_str, relative_path = stripped.split("\t", 1)
+                expected_size = int(size_str)
+            except ValueError:
+                # 若行格式异常则跳过但计为失败。
+                result["ok"] = False
+                continue
+            # 组合本地文件路径。
+            local_file = base_path / relative_path
+            # 更新已检查计数。
+            result["checked"] = int(result["checked"]) + 1
+            # 若文件不存在则记录缺失。
+            if not local_file.exists():
+                result["missing"].append(relative_path)
+                result["ok"] = False
+                continue
+            # 读取实际大小并与清单比对。
+            actual_size = local_file.stat().st_size
+            if actual_size != expected_size:
+                result["size_mismatch"].append(
+                    {
+                        "path": relative_path,
+                        "expected": expected_size,
+                        "actual": actual_size,
+                    }
+                )
+                result["ok"] = False
+    # 返回最终的校验结果。
+    return result
+
+
+# 定义从远端回传结果目录的主函数。
+def fetch_results_from_remote(
+    user: str,
+    host: str,
+    remote_outputs_dir: str,
+    local_results_dir: str,
+    keyfile: Optional[str] = None,
+    pattern: Optional[str] = None,
+    retries: int = 3,
+    backoff_sec: int = 3,
+    verify_manifest: bool = True,
+    manifest_name: str = "_manifest.txt",
+) -> Dict[str, object]:
+    # 初始化返回结构，默认表示未验证。
+    summary: Dict[str, object] = {
+        "ok": False,
+        "local_dir": local_results_dir,
+        "verified": False,
+        "missing": [],
+        "size_mismatch": [],
+        "manifest": None,
+    }
+    # 确保本地目录存在。
+    Path(local_results_dir).mkdir(parents=True, exist_ok=True)
+    # 计算远端与本地的清单路径。
+    remote_manifest_path = f"{remote_outputs_dir.rstrip('/')}/{manifest_name}"
+    local_manifest_path = Path(local_results_dir) / manifest_name
+    # 在开启校验时先生成并下载清单。
+    if verify_manifest:
+        console.print("[blue][file_transfer] 正在生成远端文件清单……[/blue]")
+        manifest_rc = generate_remote_manifest(
+            user=user,
+            host=host,
+            remote_dir=remote_outputs_dir,
+            manifest_path=remote_manifest_path,
+            keyfile=keyfile,
+            pattern=pattern,
+        )
+        if manifest_rc != 0:
+            console.print(
+                "[red][file_transfer] 清单生成失败，取消本次回传。[/red]"
+            )
+            return summary
+        console.print("[blue][file_transfer] 正在下载远端清单文件……[/blue]")
+        try:
+            download_with_retry(
+                user=user,
+                host=host,
+                remote_dir=remote_outputs_dir,
+                local_dir=local_results_dir,
+                keyfile=keyfile,
+                pattern=manifest_name,
+                retries=retries,
+                backoff_sec=backoff_sec,
+                preserve=[manifest_name],
+            )
+            summary["manifest"] = str(local_manifest_path)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            console.print(
+                f"[red][file_transfer] 下载清单失败：{exc}[/red]"
+            )
+            return summary
+    # 下载远端输出目录。
+    console.print("[blue][file_transfer] 开始回传远端结果目录……[/blue]")
+    download_with_retry(
+        user=user,
+        host=host,
+        remote_dir=remote_outputs_dir,
+        local_dir=local_results_dir,
+        keyfile=keyfile,
+        pattern=pattern,
+        retries=retries,
+        backoff_sec=backoff_sec,
+        preserve=[manifest_name] if verify_manifest else None,
+    )
+    # 下载成功后标记成功。
+    summary["ok"] = True
+    # 在启用清单校验时执行比对。
+    if verify_manifest and summary["manifest"]:
+        console.print("[blue][file_transfer] 正在校验本地文件与清单……[/blue]")
+        verify_result = verify_local_against_manifest(
+            local_dir=local_results_dir,
+            manifest_path=str(local_manifest_path),
+        )
+        summary.update(verify_result)
+        summary["verified"] = bool(verify_result.get("ok"))
+    return summary
+
+
+# 定义一个可选函数用于在远端轮转日志。
+def rotate_remote_log(user: str, host: str, log_path: str, keep: int, keyfile: Optional[str] = None) -> int:
+    # 构造 shell 命令，将当前日志重命名并删除多余备份。
+    command = (
+        "set -euo pipefail; "
+        f"LOG={shlex.quote(log_path)}; "
+        "if [ -f \"$LOG\" ]; then "
+        "DIR=$(dirname \"$LOG\"); "
+        "TS=$(date +%Y%m%d-%H%M%S); "
+        "mv \"$LOG\" \"$DIR/run-$TS.log\"; "
+        "touch \"$LOG\"; "
+        "fi; "
+        "DIR=$(dirname \"$LOG\"); "
+        f"ls -1t \"$DIR\"/run-*.log 2>/dev/null | tail -n +{keep + 1} | while read f; do rm -f \"$f\"; done"
+    )
+    # 在远端执行命令。
+    result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
+    # 根据返回码打印提示。
+    if result["returncode"] == 0:
+        console.print("[green][file_transfer] 已完成远端日志轮转。[/green]")
+    else:
+        console.print("[yellow][file_transfer] 日志轮转命令执行失败或日志不存在。[/yellow]")
+    # 返回退出码。
+    return result["returncode"]
+
+
+# 定义一个可选函数用于清空远端输出目录。
+def cleanup_remote_outputs(
+    user: str,
+    host: str,
+    outputs_dir: str,
+    keyfile: Optional[str] = None,
+) -> int:
+    # 构造安全的清理命令，兼顾隐藏文件。
+    command = (
+        "set -euo pipefail; "
+        f"DIR={shlex.quote(outputs_dir)}; "
+        "if [ -d \"$DIR\" ]; then "
+        "shopt -s dotglob nullglob; "
+        "rm -rf \"$DIR\"/*; "
+        "fi"
+    )
+    # 调用远端执行函数。
+    result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
+    # 根据返回码打印提示信息。
+    if result["returncode"] == 0:
+        console.print("[green][file_transfer] 已清空远端 outputs 目录。[/green]")
+    else:
+        console.print("[yellow][file_transfer] 清理远端 outputs 目录失败或目录不存在。[/yellow]")
+    # 返回退出码供调用方处理。
+    return result["returncode"]
 
 
 # 定义用于部署或更新远端仓库的核心函数。

@@ -33,6 +33,16 @@ asr:
 transfer:
   upload_local_dir: "./materials"   # 本地待上传的素材目录
   download_glob: "*.json"
+  results_root: "./results"
+  retries: 3
+  retry_backoff_sec: 3
+  verify_manifest: true
+  manifest_name: "_manifest.txt"
+
+cleanup:
+  remove_remote_outputs: false
+  rotate_remote_logs: true
+  keep_log_backups: 5
 
 huggingface:
   token: ""              # 运行时从本地 config.yaml 注入，仓库中保持留空

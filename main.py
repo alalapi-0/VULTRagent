@@ -28,10 +28,24 @@ from rich.table import Table
 import yaml
 # 从 core.vultr_api 模块导入真实的 API 函数。
 from core.vultr_api import get_instance_info, list_instances
-# 从 core.remote_exec 模块导入占位函数。
-from core.remote_exec import run_ssh_command, tail_remote_log
-# 从 core.file_transfer 模块导入占位函数。
-from core.file_transfer import upload_local_to_remote, fetch_results_from_remote, deploy_repo, verify_entry, print_deploy_summary
+# 从 core.remote_exec 模块导入 SSH、日志与 tmux 管理函数。
+from core.remote_exec import (
+    run_ssh_command,
+    tail_remote_log,
+    stop_tmux_session,
+    has_tmux_session,
+)
+# 从 core.file_transfer 模块导入文件传输、结果回传与仓库部署函数。
+from core.file_transfer import (
+    upload_local_to_remote,
+    fetch_results_from_remote,
+    deploy_repo,
+    verify_entry,
+    print_deploy_summary,
+    make_local_results_dir,
+    rotate_remote_log,
+    cleanup_remote_outputs,
+)
 # 从 core.remote_bootstrap 模块导入远端部署与报告函数。
 from core.remote_bootstrap import upload_and_bootstrap, print_health_report
 # 从 core.asr_runner 模块导入占位函数。
@@ -628,14 +642,228 @@ def handle_tail_logs(config: Dict) -> None:
 
 # 定义回传 ASR 结果的函数。
 def handle_fetch_results(config: Dict) -> None:
-    # 调用 fetch_results_from_remote 占位函数。
-    fetch_results_from_remote(remote_path=config.get("remote", {}).get("outputs_dir", ""),
-                              local_path="./outputs")
+    # 若未加载配置文件则无法继续操作。
+    if not config:
+        console.print("[red]未加载配置文件，请先创建 config.yaml。[/red]")
+        return
+    try:
+        # 读取状态文件以确定目标实例。
+        state = load_state()
+    except FileNotFoundError:
+        console.print("[red]尚未选择实例，请先使用菜单 2 保存目标实例。[/red]")
+        return
+    except json.JSONDecodeError:
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+    # 提取实例信息以用于目录组织与输出提示。
+    instance_label = state.get("label", "")
+    instance_id = state.get("instance_id", "")
+    ip_address = state.get("ip", "")
+    if not ip_address:
+        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        return
+    # 解析 SSH 登录配置。
+    ssh_conf = config.get("ssh", {})
+    ssh_user = ssh_conf.get("user", "")
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请补全后再试。[/red]")
+        return
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+    # 解析远端结果目录。
+    remote_conf = config.get("remote", {})
+    outputs_dir = remote_conf.get("outputs_dir", "")
+    if not outputs_dir:
+        console.print("[red]配置文件缺少 remote.outputs_dir，无法回传结果。[/red]")
+        return
+    # 读取传输相关配置，提供合理的默认值。
+    transfer_conf = config.get("transfer", {})
+    results_root = transfer_conf.get("results_root", "./results")
+    download_glob = (transfer_conf.get("download_glob") or "").strip() or None
+    retries = transfer_conf.get("retries", 3)
+    backoff = transfer_conf.get("retry_backoff_sec", 3)
+    verify_manifest = transfer_conf.get("verify_manifest", True)
+    manifest_name = transfer_conf.get("manifest_name", "_manifest.txt")
+    # 将数值型配置转换为整数，并处理潜在异常。
+    try:
+        retries = int(retries)
+    except (TypeError, ValueError):
+        retries = 3
+    try:
+        backoff = int(backoff)
+    except (TypeError, ValueError):
+        backoff = 3
+    # 构建本地结果目录并展示路径。
+    local_results_dir = make_local_results_dir(
+        results_root=results_root,
+        instance_label=instance_label,
+        instance_id=instance_id,
+    )
+    console.print(
+        f"[blue]即将从 {ip_address}:{outputs_dir} 回传结果到 {local_results_dir}。[/blue]"
+    )
+    if download_glob:
+        console.print(
+            f"[blue]仅会下载符合模式 {download_glob} 的文件。[/blue]"
+        )
+    # 调用核心函数执行回传与重试逻辑。
+    try:
+        result = fetch_results_from_remote(
+            user=ssh_user,
+            host=ip_address,
+            remote_outputs_dir=outputs_dir,
+            local_results_dir=local_results_dir,
+            keyfile=ssh_key_path or None,
+            pattern=download_glob,
+            retries=max(retries, 0),
+            backoff_sec=max(backoff, 1),
+            verify_manifest=bool(verify_manifest),
+            manifest_name=manifest_name,
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        console.print(f"[red]回传过程中发生错误：{exc}[/red]")
+        console.print("[yellow]请检查网络连通性、磁盘空间与 SSH 权限后重试。[/yellow]")
+        return
+    # 输出汇总信息，包含目录、校验结果与缺失统计。
+    if result.get("ok"):
+        console.print("[green]✅ 结果回传完成。[/green]")
+    else:
+        console.print("[yellow]⚠️ 回传完成，但清单校验存在异常。[/yellow]")
+    console.print(f"[cyan]本地结果目录：{result.get('local_dir')}[/cyan]")
+    if result.get("manifest"):
+        console.print(f"[cyan]本地清单文件：{result.get('manifest')}[/cyan]")
+    if bool(verify_manifest):
+        if result.get("verified"):
+            console.print("[green]清单校验：通过。[/green]")
+        else:
+            missing_count = len(result.get("missing", []))
+            mismatch_count = len(result.get("size_mismatch", []))
+            console.print(
+                f"[yellow]清单校验未通过，缺失 {missing_count} 个文件，大小不匹配 {mismatch_count} 个。[/yellow]"
+            )
+            if missing_count:
+                console.print(f"[yellow]缺失文件示例：{result.get('missing')[:5]}[/yellow]")
+            if mismatch_count:
+                console.print(
+                    f"[yellow]大小不一致示例：{result.get('size_mismatch')[:3]}[/yellow]"
+                )
+    # 根据配置执行可选的清理动作。
+    cleanup_conf = config.get("cleanup", {})
+    if result.get("ok"):
+        if cleanup_conf.get("rotate_remote_logs"):
+            log_file = remote_conf.get("log_file", "")
+            keep_logs = cleanup_conf.get("keep_log_backups", 5)
+            try:
+                keep_logs = int(keep_logs)
+            except (TypeError, ValueError):
+                keep_logs = 5
+            if log_file:
+                rotate_remote_log(
+                    user=ssh_user,
+                    host=ip_address,
+                    log_path=log_file,
+                    keep=max(keep_logs, 1),
+                    keyfile=ssh_key_path or None,
+                )
+            else:
+                console.print("[yellow]未配置 remote.log_file，跳过日志轮转。[/yellow]")
+        if cleanup_conf.get("remove_remote_outputs"):
+            cleanup_remote_outputs(
+                user=ssh_user,
+                host=ip_address,
+                outputs_dir=outputs_dir,
+                keyfile=ssh_key_path or None,
+            )
+    else:
+        console.print("[yellow]检测到回传存在异常，已跳过远端清理操作。[/yellow]")
+    # 给出下一步建议。
+    console.print("[blue]可继续执行菜单 9 停止远端任务或查看结果目录。[/blue]")
 
 # 定义停止或清理远端任务的函数。
 def handle_cleanup_remote(config: Dict) -> None:
-    # 目前清理功能尚未实现，此处给出占位提示。
-    console.print("[yellow]清理功能将在后续版本中提供。[/yellow]")
+    # 校验配置是否加载。
+    if not config:
+        console.print("[red]未加载配置文件，请先创建 config.yaml。[/red]")
+        return
+    try:
+        # 尝试读取状态文件获取当前实例信息。
+        state = load_state()
+    except FileNotFoundError:
+        console.print("[red]尚未选择实例，请先使用菜单 2 保存目标实例。[/red]")
+        return
+    except json.JSONDecodeError:
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+    # 解析基础信息以便输出提示。
+    ip_address = state.get("ip", "")
+    instance_label = state.get("label", state.get("instance_id", ""))
+    if not ip_address:
+        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        return
+    # 解析 SSH 配置。
+    ssh_conf = config.get("ssh", {})
+    ssh_user = ssh_conf.get("user", "")
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请补全后再试。[/red]")
+        return
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+    # 读取远端目录与 tmux 配置。
+    remote_conf = config.get("remote", {})
+    session_name = remote_conf.get("tmux_session", "")
+    log_file = remote_conf.get("log_file", "")
+    outputs_dir = remote_conf.get("outputs_dir", "")
+    cleanup_conf = config.get("cleanup", {})
+    console.print(
+        f"[blue]正在处理 {instance_label} ({ip_address}) 的后台任务与清理操作。[/blue]"
+    )
+    # 如果配置了 tmux 会话，则先检测并尝试停止。
+    if session_name:
+        exists = has_tmux_session(
+            user=ssh_user,
+            host=ip_address,
+            session=session_name,
+            keyfile=ssh_key_path or None,
+        )
+        if exists:
+            stop_tmux_session(
+                user=ssh_user,
+                host=ip_address,
+                session=session_name,
+                keyfile=ssh_key_path or None,
+            )
+    else:
+        console.print("[yellow]未配置 remote.tmux_session，跳过 tmux 停止步骤。[/yellow]")
+    # 根据配置执行日志轮转。
+    if cleanup_conf.get("rotate_remote_logs"):
+        keep_logs = cleanup_conf.get("keep_log_backups", 5)
+        try:
+            keep_logs = int(keep_logs)
+        except (TypeError, ValueError):
+            keep_logs = 5
+        if log_file:
+            rotate_remote_log(
+                user=ssh_user,
+                host=ip_address,
+                log_path=log_file,
+                keep=max(keep_logs, 1),
+                keyfile=ssh_key_path or None,
+            )
+        else:
+            console.print("[yellow]未配置 remote.log_file，跳过日志轮转。[/yellow]")
+    # 根据配置执行 outputs 目录清理。
+    if cleanup_conf.get("remove_remote_outputs"):
+        if outputs_dir:
+            cleanup_remote_outputs(
+                user=ssh_user,
+                host=ip_address,
+                outputs_dir=outputs_dir,
+                keyfile=ssh_key_path or None,
+            )
+        else:
+            console.print("[yellow]未配置 remote.outputs_dir，跳过远端输出清理。[/yellow]")
+    # 输出总结信息。
+    console.print("[blue]清理流程结束，可根据需要重新运行 ASR 或退出程序。[/blue]")
 
 # 建立菜单选项与处理函数的映射。
 MENU_ACTIONS: Dict[str, Dict[str, Callable[[Dict], None]]] = {
@@ -648,9 +876,9 @@ MENU_ACTIONS: Dict[str, Dict[str, Callable[[Dict], None]]] = {
     "6": {"label": "在 tmux 中后台运行 asr_quickstart.py", "handler": handle_run_asr_tmux},
     "7": {"label": "实时查看远端日志", "handler": handle_tail_logs},
     "8": {"label": "回传 ASR 结果到本地", "handler": handle_fetch_results},
-    "9": {"label": "一键环境部署/检查（远端）", "handler": handle_remote_bootstrap},
-    "10": {"label": "部署/更新 ASR 仓库到远端", "handler": handle_deploy_repo},
-    "11": {"label": "停止/清理远端任务", "handler": handle_cleanup_remote},
+    "9": {"label": "停止/清理远端任务", "handler": handle_cleanup_remote},
+    "10": {"label": "一键环境部署/检查（远端）", "handler": handle_remote_bootstrap},
+    "11": {"label": "部署/更新 ASR 仓库到远端", "handler": handle_deploy_repo},
     "12": {"label": "退出", "handler": lambda config: sys.exit(0)},  # 使用匿名函数统一出口逻辑。
 }
 
