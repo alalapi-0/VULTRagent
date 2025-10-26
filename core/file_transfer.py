@@ -4,6 +4,12 @@
 import json
 # 导入 shlex 模块以确保在构建 shell 命令时进行安全转义。
 import shlex
+# 导入 subprocess 模块以执行本地外部命令（rsync 或 scp）。
+import subprocess
+# 导入 shutil 模块以检测 rsync 是否可用。
+import shutil
+# 导入 pathlib.Path 以处理本地路径的展开与校验。
+from pathlib import Path
 # 导入 typing 模块中的 Dict、List、Optional 以完善类型注解。
 from typing import Dict, List, Optional
 
@@ -41,10 +47,99 @@ def _print_step(step: int, total: int, message: str) -> None:
     console.print(f"[cyan][{step}/{total}] {message}[/cyan]")
 
 
-# 定义上传文件到远端的占位函数（后续轮次会补全真实逻辑）。
-def upload_local_to_remote(local_path: str, remote_path: str) -> None:
-    # 目前功能尚未实现，打印提示以便调试。
-    console.print(f"[yellow][file_transfer] upload_local_to_remote 占位调用 local={local_path}, remote={remote_path}[/yellow]")
+# 定义上传文件到远端 inputs 目录的函数，实现 rsync 优先、scp 回退的逻辑。
+def upload_local_to_remote(
+    local_path: str,
+    user: str,
+    host: str,
+    remote_inputs_dir: str,
+    keyfile: Optional[str] = None,
+) -> None:
+    # 展开本地路径以确保兼容 ~ 与相对路径。
+    local_dir = Path(local_path).expanduser().resolve()
+    # 校验远端主机与用户是否提供。
+    if not host or not user:
+        console.print("[red][file_transfer] 缺少 SSH 主机或用户名，无法上传素材。[/red]")
+        raise ValueError("missing ssh host or user")
+    # 校验远端 inputs 目录是否配置。
+    if not remote_inputs_dir:
+        console.print("[red][file_transfer] 缺少 remote.inputs_dir 配置，无法确定上传目标。[/red]")
+        raise ValueError("missing remote inputs_dir")
+    # 检查本地目录是否存在。
+    if not local_dir.exists():
+        console.print(f"[red][file_transfer] 本地目录不存在：{local_dir}[/red]")
+        raise FileNotFoundError(local_dir)
+    # 确认本地路径为目录，否则提示用户检查配置。
+    if not local_dir.is_dir():
+        console.print(f"[red][file_transfer] {local_dir} 不是目录，请确认 transfer.upload_local_dir 设置。[/red]")
+        raise NotADirectoryError(local_dir)
+    # 提示用户正在创建远端目录，保证 rsync/scp 可以写入。
+    console.print(f"[blue][file_transfer] 确保远端目录存在：{remote_inputs_dir}[/blue]")
+    ensure_result = _execute_remote(
+        user=user,
+        host=host,
+        command=f"mkdir -p {_quote(remote_inputs_dir)}",
+        keyfile=keyfile,
+    )
+    # 检查远端目录创建命令的返回码，非零表示执行失败。
+    if ensure_result["returncode"] != 0:
+        console.print("[red][file_transfer] 创建远端目录失败，请检查 SSH 权限。[/red]")
+        raise RuntimeError("failed to create remote inputs directory")
+    # 根据系统是否存在 rsync 选择上传方式。
+    rsync_path = shutil.which("rsync")
+    # 统一构造远端目标字符串，确保以斜杠结尾表示目录。
+    remote_target = f"{user}@{host}:{remote_inputs_dir.rstrip('/')}/"
+    # 构造 SSH 选项字符串，用于 rsync -e 传递。
+    ssh_parts = ["ssh", "-o", "BatchMode=yes"]
+    # 如果提供了密钥文件，则追加 -i 选项。
+    if keyfile:
+        ssh_parts.extend(["-i", keyfile])
+    # 将 SSH 命令拼接成字符串，并对每个片段进行 shell 转义。
+    ssh_command = " ".join(shlex.quote(part) for part in ssh_parts)
+    # 当检测到 rsync 可用时优先使用，以获得增量与进度显示能力。
+    if rsync_path:
+        console.print("[green][file_transfer] 检测到 rsync，使用 rsync -avz --progress 进行同步。[/green]")
+        # 构造 rsync 参数列表，确保末尾带有斜杠以复制目录内容。
+        rsync_args = [
+            rsync_path,
+            "-avz",
+            "--progress",
+            "-e",
+            ssh_command,
+            f"{str(local_dir)}/",
+            remote_target,
+        ]
+        # 输出命令摘要以便用户复现，密钥路径不会包含敏感信息。
+        console.print(f"[cyan][file_transfer] 执行命令：{' '.join(rsync_args)}[/cyan]")
+        # 启动 rsync 并在失败时抛出异常，由调用方捕获并提示。
+        subprocess.run(rsync_args, check=True)
+        # 成功后告知用户上传完成。
+        console.print("[green][file_transfer] rsync 上传完成。[/green]")
+        return
+    # 若 rsync 不可用则打印降级提示。
+    console.print("[yellow][file_transfer] 未检测到 rsync，降级使用 scp -r 批量上传，性能较差。[/yellow]")
+    # 构建 scp 参数，保留时间戳并递归复制。
+    scp_args = ["scp", "-p", "-r"]
+    # 若配置了密钥文件则同样传递给 scp。
+    if keyfile:
+        scp_args.extend(["-i", keyfile])
+    # 获取待上传目录中的所有项目，确保多文件复制到同一目标。
+    items = sorted(local_dir.iterdir())
+    # 当目录为空时提示用户并提前返回。
+    if not items:
+        console.print("[yellow][file_transfer] 本地目录为空，未执行上传。[/yellow]")
+        return
+    # 将所有文件或子目录追加到 scp 参数中。
+    for item in items:
+        scp_args.append(str(item))
+    # 在参数末尾追加远端目标目录。
+    scp_args.append(remote_target)
+    # 输出最终命令摘要供排查使用。
+    console.print(f"[cyan][file_transfer] 执行命令：{' '.join(shlex.quote(arg) for arg in scp_args)}[/cyan]")
+    # 执行 scp 上传过程，若失败将抛出异常。
+    subprocess.run(scp_args, check=True)
+    # 提醒用户使用 scp 时缺乏增量能力，后续可考虑安装 rsync。
+    console.print("[green][file_transfer] scp 上传完成，如需更高性能请在本地安装 rsync。[/green]")
 
 
 # 定义从远端下载结果的占位函数（后续轮次会补全真实逻辑）。

@@ -10,6 +10,8 @@ import sys
 import time
 # 导入 subprocess 模块以捕获外部命令异常。
 import subprocess
+# 导入 shlex 模块以在提示命令时进行转义。
+import shlex
 # 导入 pathlib.Path 以便构建跨平台的文件路径。
 from pathlib import Path
 # 导入 typing 模块中的 Callable、Dict 和 List 类型用于类型注解。
@@ -27,7 +29,7 @@ import yaml
 # 从 core.vultr_api 模块导入真实的 API 函数。
 from core.vultr_api import get_instance_info, list_instances
 # 从 core.remote_exec 模块导入占位函数。
-from core.remote_exec import run_ssh_command, start_remote_job_in_tmux, tail_remote_log
+from core.remote_exec import run_ssh_command, tail_remote_log
 # 从 core.file_transfer 模块导入占位函数。
 from core.file_transfer import upload_local_to_remote, fetch_results_from_remote, deploy_repo, verify_entry, print_deploy_summary
 # 从 core.remote_bootstrap 模块导入远端部署与报告函数。
@@ -452,27 +454,177 @@ def handle_deploy_repo(config: Dict) -> None:
     entry_ok = bool(verify_info.get("exists")) and bool(verify_info.get("py_compiles"))
     if deploy_info.get("ok") and entry_ok:
         console.print("[green]✅ 仓库部署完成，可继续执行：[/green]")
-        console.print("  • 菜单 7：上传本地素材到远端输入目录。")
-        console.print("  • 菜单 8：在 tmux 中后台运行 asr_quickstart.py。")
+        console.print("  • 菜单 5：上传本地素材到远端输入目录。")
+        console.print("  • 菜单 6：在 tmux 中后台运行 asr_quickstart.py。")
     else:
         console.print("[red]❌ 部署或入口检查未通过，请检查上述输出并重试。[/red]")
-        console.print("[yellow]常见问题：确认 SSH 凭据、仓库分支与入口文件路径是否正确；如提示 python3 缺失，请先运行菜单 5 进行环境部署。[/yellow]")
+        console.print("[yellow]常见问题：确认 SSH 凭据、仓库分支与入口文件路径是否正确；如提示 python3 缺失，请先运行菜单 9 进行环境部署。[/yellow]")
 
 # 定义上传素材到远端的函数。
 def handle_upload_materials(config: Dict) -> None:
-    # 调用 upload_local_to_remote 占位函数。
-    upload_local_to_remote(local_path="./samples", remote_path=config.get("remote", {}).get("inputs_dir", ""))
+    # 在执行前检查配置是否存在。
+    if not config:
+        console.print("[red]未加载配置文件，请先创建 config.yaml。[/red]")
+        return
+    try:
+        # 读取状态文件获取当前实例信息。
+        state = load_state()
+    except FileNotFoundError:
+        console.print("[red]尚未选择实例，请先使用菜单 2 保存目标实例。[/red]")
+        return
+    except json.JSONDecodeError:
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+    # 提取远端 IP 地址。
+    ip_address = state.get("ip", "")
+    if not ip_address:
+        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        return
+    # 解析 SSH 配置获取用户名与私钥。
+    ssh_conf = config.get("ssh", {})
+    ssh_user = ssh_conf.get("user", "")
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请补全后重试。[/red]")
+        return
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+    # 获取远端 inputs 目录配置。
+    remote_conf = config.get("remote", {})
+    inputs_dir = remote_conf.get("inputs_dir", "")
+    if not inputs_dir:
+        console.print("[red]配置文件缺少 remote.inputs_dir，无法确定上传目标。[/red]")
+        return
+    # 获取本地素材目录配置。
+    transfer_conf = config.get("transfer", {})
+    local_dir = transfer_conf.get("upload_local_dir", "") or "./materials"
+    # 输出上传摘要信息。
+    console.print(f"[blue]即将把 {local_dir} 上传到 {ssh_user}@{ip_address}:{inputs_dir}。[/blue]")
+    try:
+        # 调用核心函数执行上传。
+        upload_local_to_remote(
+            local_path=local_dir,
+            user=ssh_user,
+            host=ip_address,
+            remote_inputs_dir=inputs_dir,
+            keyfile=ssh_key_path or None,
+        )
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        console.print(f"[red]上传失败：{exc}[/red]")
+        return
+    except subprocess.CalledProcessError as exc:
+        console.print(f"[red]上传过程中命令失败，退出码 {exc.returncode}。[/red]")
+        return
+    except RuntimeError as exc:
+        console.print(f"[red]上传失败：{exc}[/red]")
+        return
+    # 上传成功后给出下一步建议与远端统计命令。
+    console.print("[green]✅ 上传完成，可继续执行菜单 6 启动 ASR。[/green]")
+    ssh_hint = "ssh"
+    if ssh_key_path:
+        ssh_hint += f" -i {shlex.quote(ssh_key_path)}"
+    remote_find = f"find {shlex.quote(inputs_dir)} -type f | wc -l"
+    ssh_hint += f" {ssh_user}@{ip_address} \"{remote_find}\""
+    console.print(f"[blue]可选统计命令：{ssh_hint}[/blue]")
 
 # 定义在 tmux 中后台运行 ASR 的函数。
 def handle_run_asr_tmux(config: Dict) -> None:
-    # 调用 start_remote_job_in_tmux 占位函数。
-    start_remote_job_in_tmux(session_name=config.get("remote", {}).get("tmux_session", "default"),
-                             command="python asr_quickstart.py")
+    # 校验配置是否加载。
+    if not config:
+        console.print("[red]未加载配置文件，请先创建 config.yaml。[/red]")
+        return
+    try:
+        # 从状态文件中读取当前实例信息。
+        state = load_state()
+    except FileNotFoundError:
+        console.print("[red]尚未选择实例，请先使用菜单 2 保存目标实例。[/red]")
+        return
+    except json.JSONDecodeError:
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+    # 解析远端 IP 地址。
+    ip_address = state.get("ip", "")
+    if not ip_address:
+        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        return
+    # 解析 SSH 用户名与密钥。
+    ssh_conf = config.get("ssh", {})
+    ssh_user = ssh_conf.get("user", "")
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请补全后重试。[/red]")
+        return
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+    # 输出启动摘要。
+    console.print(f"[blue]即将在 {ip_address} 的 tmux 中运行 ASR 任务。[/blue]")
+    try:
+        # 调用核心函数启动 tmux 后台任务。
+        result_code = run_asr_job(
+            user=ssh_user,
+            host=ip_address,
+            keyfile=ssh_key_path or None,
+            cfg=config,
+        )
+    except OSError as exc:
+        console.print(f"[red]执行远端命令时出现系统错误：{exc}[/red]")
+        return
+    # 根据返回码输出提示。
+    if result_code == 0:
+        console.print("[green]✅ 已启动 ASR 任务，请继续使用菜单 7 查看实时日志。[/green]")
+    else:
+        console.print(f"[red]❌ ASR 任务启动失败，返回码 {result_code}。请检查上述输出。[/red]")
 
 # 定义实时查看远端日志的函数。
 def handle_tail_logs(config: Dict) -> None:
-    # 调用 tail_remote_log 占位函数。
-    tail_remote_log(log_file=config.get("remote", {}).get("log_file", ""))
+    # 校验配置是否加载。
+    if not config:
+        console.print("[red]未加载配置文件，请先创建 config.yaml。[/red]")
+        return
+    try:
+        # 读取状态文件获取当前实例。
+        state = load_state()
+    except FileNotFoundError:
+        console.print("[red]尚未选择实例，请先使用菜单 2 保存目标实例。[/red]")
+        return
+    except json.JSONDecodeError:
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+    # 获取远端 IP。
+    ip_address = state.get("ip", "")
+    if not ip_address:
+        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        return
+    # 获取 SSH 配置。
+    ssh_conf = config.get("ssh", {})
+    ssh_user = ssh_conf.get("user", "")
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请补全后重试。[/red]")
+        return
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+    # 获取日志文件路径。
+    remote_conf = config.get("remote", {})
+    log_file = remote_conf.get("log_file", "")
+    if not log_file:
+        console.print("[red]配置文件缺少 remote.log_file，无法查看日志。[/red]")
+        return
+    # 提示用户正在连接并展示日志位置。
+    console.print(f"[blue]开始实时查看 {ip_address}:{log_file}，按 Ctrl+C 结束。[/blue]")
+    try:
+        # 调用核心函数执行 tail -f。
+        exit_code = tail_remote_log(
+            user=ssh_user,
+            host=ip_address,
+            log_path=log_file,
+            keyfile=ssh_key_path or None,
+        )
+    except OSError as exc:
+        console.print(f"[red]查看日志时发生系统错误：{exc}[/red]")
+        return
+    # 根据退出码提供后续操作建议。
+    if exit_code == 0:
+        console.print("[green]✅ 日志查看结束，可继续执行菜单 8 回传结果。[/green]")
+    else:
+        console.print(f"[yellow]日志查看结束，退出码 {exit_code}。可根据需要执行菜单 8 回传结果。[/yellow]")
 
 # 定义回传 ASR 结果的函数。
 def handle_fetch_results(config: Dict) -> None:
@@ -485,11 +637,6 @@ def handle_cleanup_remote(config: Dict) -> None:
     # 目前清理功能尚未实现，此处给出占位提示。
     console.print("[yellow]清理功能将在后续版本中提供。[/yellow]")
 
-# 定义直接运行 ASR 任务的函数。
-def handle_run_asr(config: Dict) -> None:
-    # 调用 run_asr_job 占位函数。
-    run_asr_job(config)
-
 # 建立菜单选项与处理函数的映射。
 MENU_ACTIONS: Dict[str, Dict[str, Callable[[Dict], None]]] = {
     # 每个键为用户输入的序号，值为包含描述和处理函数的字典。
@@ -497,12 +644,12 @@ MENU_ACTIONS: Dict[str, Dict[str, Callable[[Dict], None]]] = {
     "2": {"label": "选择当前实例并保存", "handler": handle_select_instance},
     "3": {"label": "查看当前实例详情", "handler": handle_show_instance_details},
     "4": {"label": "连接并测试 SSH", "handler": handle_test_ssh},
-    "5": {"label": "一键环境部署/检查（远端）", "handler": handle_remote_bootstrap},
-    "6": {"label": "部署/更新 ASR 仓库到远端", "handler": handle_deploy_repo},
-    "7": {"label": "上传本地素材到远端输入目录", "handler": handle_upload_materials},
-    "8": {"label": "在 tmux 中后台运行 asr_quickstart.py", "handler": handle_run_asr_tmux},
-    "9": {"label": "实时查看远端日志", "handler": handle_tail_logs},
-    "10": {"label": "回传 ASR 结果到本地", "handler": handle_fetch_results},
+    "5": {"label": "上传本地素材到远端输入目录", "handler": handle_upload_materials},
+    "6": {"label": "在 tmux 中后台运行 asr_quickstart.py", "handler": handle_run_asr_tmux},
+    "7": {"label": "实时查看远端日志", "handler": handle_tail_logs},
+    "8": {"label": "回传 ASR 结果到本地", "handler": handle_fetch_results},
+    "9": {"label": "一键环境部署/检查（远端）", "handler": handle_remote_bootstrap},
+    "10": {"label": "部署/更新 ASR 仓库到远端", "handler": handle_deploy_repo},
     "11": {"label": "停止/清理远端任务", "handler": handle_cleanup_remote},
     "12": {"label": "退出", "handler": lambda config: sys.exit(0)},  # 使用匿名函数统一出口逻辑。
 }

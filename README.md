@@ -1,5 +1,6 @@
 # VULTRagent
 
+> **新增内容（Round 5）**：新增素材上传、tmux 后台运行 ASR 及实时日志监控，支持 Hugging Face 环境变量注入与 rsync/scp 兼容流程。
 > **新增内容（Round 4）**：新增远端仓库部署/更新流程（支持 git-lfs、子模块、入口校验），并保留 Round 3 的一键环境部署与健康检查能力。
 
 ## 项目简介与目标
@@ -11,12 +12,12 @@ VULTRagent 旨在通过本地命令行工具自动化管理 Vultr VPS，主要�
 2. 选择当前实例并保存（写入 `.state.json`）
 3. 查看当前实例详情（实时请求 API）
 4. 连接并测试 SSH（占位）
-5. 一键环境部署/检查（远端脚本，包含健康检查与 Hugging Face 可选登录）
-6. 部署/更新 ASR 仓库到远端（支持 clone/pull、子模块、git-lfs、入口检查）
-7. 上传本地素材到远端输入目录（占位）
-8. 在 tmux 中后台运行 `asr_quickstart.py`（占位）
-9. 实时查看远端日志（占位）
-10. 回传 ASR 结果到本地（占位）
+5. 上传本地素材到远端输入目录（支持 rsync，自动降级为 scp）
+6. 在 tmux 中后台运行 `asr_quickstart.py`（非交互，支持 Hugging Face 环境变量注入）
+7. 实时查看远端日志（`tail -f` 流式转发，支持 Ctrl+C 退出）
+8. 回传 ASR 结果到本地（占位，Round 6 将完善）
+9. 一键环境部署/检查（远端脚本，包含健康检查与 Hugging Face 可选登录）
+10. 部署/更新 ASR 仓库到远端（支持 clone/pull、子模块、git-lfs、入口检查）
 11. 停止/清理远端任务（占位）
 12. 退出
 
@@ -26,10 +27,10 @@ VULTRagent/
 ├── main.py                  # 命令行入口，加载菜单并调用核心模块
 ├── core/
 │   ├── vultr_api.py         # Vultr API 封装（实例列表、详情、重试逻辑）
-│   ├── remote_exec.py       # SSH / 文件上传封装与后续扩展占位
-│   ├── file_transfer.py     # 文件传输与仓库部署占位逻辑
+│   ├── remote_exec.py       # SSH / tmux 会话控制 / 日志追踪工具集
+│   ├── file_transfer.py     # 文件传输与仓库部署逻辑（rsync 优先，scp 降级）
 │   ├── remote_bootstrap.py  # 远端初始化与健康检查逻辑
-│   └── asr_runner.py        # ASR 任务执行占位逻辑
+│   └── asr_runner.py        # ASR 命令构建与 tmux 调度封装
 ├── scripts/
 │   └── bootstrap_remote.sh  # 远端一键脚本（幂等部署与健康检查）
 ├── config.example.yaml      # 配置模板，供用户复制修改
@@ -105,12 +106,12 @@ VULTRagent/
 - `ssh`：默认用户与密钥配置，留空 keyfile 时走 `ssh-agent`。
 - `remote`：远端目录、日志路径、tmux 会话名等。
 - `git`：ASR 项目的 Git 仓库地址与默认分支。
-- `asr`：ASR 启动脚本与参数占位。
-- `transfer`：回传结果时的匹配模式。
+- `asr`：包含 `entry`、`python_bin`、`non_interactive`、`args`（含 `extra` 数组）等字段，用于拼装非交互命令。
+- `transfer`：上传目录（`upload_local_dir`）与回传匹配模式（`download_glob`）。
 - `huggingface`：Round 3 新增，用于控制 token 注入与 CLI 登录行为。
 
 ## 一键远端环境部署/检查
-菜单项 **5. 一键环境部署/检查** 会自动执行以下流程：
+菜单项 **9. 一键环境部署/检查** 会自动执行以下流程：
 
 1. 将本地 `scripts/bootstrap_remote.sh` 上传到远端 `/tmp/vultragentsvc_bootstrap.sh`（路径可在 `remote.bootstrap_tmp_path` 中自定义）。
 2. 通过 `ssh` 注入配置中的远端目录、日志路径、Hugging Face 选项等环境变量。
@@ -131,15 +132,15 @@ STATUS:NETWORK:FAIL:网络检测失败
 STATUS:OVERALL:FAIL:环境部署与检查完成
 ```
 
-`print_health_report` 会对上述状态进行解析并以彩色表格展示，清晰标记 ✅/❌。若某一步骤失败，可根据提示在远端手动排查后再次执行菜单 5，脚本会在已有基础上补齐缺失依赖。
+`print_health_report` 会对上述状态进行解析并以彩色表格展示，清晰标记 ✅/❌。若某一步骤失败，可根据提示在远端手动排查后再次执行菜单 9，脚本会在已有基础上补齐缺失依赖。
 
 ## 远端仓库部署（Round 4）
 
-菜单项 **6. 部署/更新 ASR 仓库到远端** 现已接入真实逻辑，推荐流程如下：
+菜单项 **10. 部署/更新 ASR 仓库到远端** 现已接入真实逻辑，推荐流程如下：
 
 - **前置条件**：
   - 已通过菜单 2 选择目标实例，`.state.json` 中包含 `ip` 等字段；
-  - 已执行菜单 5 或确认远端已安装 `git`、`git-lfs`、`python3` 等依赖；
+  - 已执行菜单 9 或确认远端已安装 `git`、`git-lfs`、`python3` 等依赖；
   - 本地可通过 `ssh user@host`（Windows 建议使用 WSL 或安装 OpenSSH 客户端）。
 - **关键配置项**（位于 `config.yaml`）：
   - `git.repo_url`：支持 SSH（推荐部署密钥）或 HTTPS；
@@ -149,9 +150,9 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
   - 使用 SSH 克隆时建议为目标仓库配置只读 Deploy Key；
   - 使用 HTTPS 克隆时需确保远端已配置 `git-credential`（可与 Hugging Face 的 `--add-to-git-credential` 说明相同处理）；
   - 若仓库包含子模块，确保主仓库与子模块均可访问；
-  - 安装 `git-lfs` 后记得执行 `git lfs install`（菜单 5 会自动处理），否则大文件无法同步。
+  - 安装 `git-lfs` 后记得执行 `git lfs install`（菜单 9 会自动处理），否则大文件无法同步。
 
-运行菜单 6 后，终端会按照 `[1/6] ensure project_dir` → `[6/6] summarize repository` 的顺序输出步骤，并实时转发远端 `git` 日志。示例输出：
+运行菜单 10 后，终端会按照 `[1/6] ensure project_dir` → `[6/6] summarize repository` 的顺序输出步骤，并实时转发远端 `git` 日志。示例输出：
 
 ```
 [1/6] ensure project_dir
@@ -172,20 +173,92 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
 Deployed branch=main commit=a1b2c3d entry=OK
 ```
 
-若部署成功且入口脚本通过 `python3 -m py_compile` 校验，界面会提示接下来可执行的菜单 7（上传素材）与菜单 8（tmux 后台运行）。
+若部署成功且入口脚本通过 `python3 -m py_compile` 校验，界面会提示接下来可执行的菜单 5（上传素材）与菜单 6（tmux 后台运行）。
 
 **常见问题与排查**：
 
 - `Host key verification failed`：首次连接新主机时请先在本地 `ssh` 一次或使用 `ssh-keyscan` 添加指纹；
 - `Permission denied (publickey)`：确认 `ssh.user`、`ssh.keyfile` 与远端授权匹配，并保证 Windows/WSL 下的密钥权限正确；
 - `fatal: Remote branch <name> not found`：确认 `git.branch` 与仓库实际分支一致；
-- `git lfs pull failed` 或 `git-lfs: command not found`：请重新执行菜单 5 或在远端运行 `git lfs install` 后再次尝试部署。
+- `git lfs pull failed` 或 `git-lfs: command not found`：请重新执行菜单 9 或在远端运行 `git lfs install` 后再次尝试部署。
+
+## 上传素材与运行 ASR（Round 5）
+
+### 前置条件
+
+- 已执行菜单 2 选择目标实例，`.state.json` 中包含 `ip` 等字段；
+- 已通过菜单 10 部署/更新 ASR 仓库，确认入口脚本存在且可编译；
+- 已运行菜单 9（或手动完成环境部署），确保远端安装了 `tmux`、`rsync`（可选）与 Python 运行环境；
+- `config.yaml` 中补全 `ssh`、`remote`、`transfer`、`asr` 与 `huggingface` 配置。
+
+### 菜单 5：上传本地素材到远端输入目录
+
+1. 默认会将 `transfer.upload_local_dir`（示例为 `./materials`）下的全部文件与子目录同步到远端 `remote.inputs_dir`。若目录不存在，程序会自动创建。
+2. 优先调用 `rsync -avz --progress`，可增量同步并展示进度；若本地缺少 `rsync`，则自动降级为 `scp -r`，速度较慢且无法增量，请在 README 的“常见问题”中了解差异。
+3. Windows 用户可通过以下方式获得 `rsync`：
+   - **WSL**：在 Windows 11/10 上启用 WSL，并在 Ubuntu 子系统中运行 `sudo apt install rsync`；
+   - **cwRsync**：安装 [cwRsync](https://www.itefix.net/cwrsync) 并在 PowerShell 中调用 `rsync`；若遇到权限问题，可改用默认的 `scp` 降级模式。
+4. 上传成功后终端会提示统计命令，例如：
+   ```bash
+   ssh -i ~/.ssh/id_rsa ubuntu@203.0.113.10 'find /home/ubuntu/asr_inputs -type f | wc -l'
+   ```
+   该命令可在远端统计素材数量，验证是否传输完整。
+
+### 菜单 6：在 tmux 中后台运行 ASR
+
+- 程序会根据 `config.yaml` 拼装非交互命令，参数映射如下：
+
+  | 配置项 | 命令行参数 |
+  | --- | --- |
+  | `asr.python_bin` | Python 可执行文件（默认 `python3`） |
+  | `asr.entry` | 入口脚本路径（相对 `remote.project_dir` 或绝对路径） |
+  | `asr.args.input_dir` | `--input` |
+  | `asr.args.output_dir` | `--output` |
+  | `asr.args.models_dir` | `--models-dir` |
+  | `asr.args.model` | `--model` |
+  | `asr.args.extra` | 追加到命令末尾的自定义参数 |
+
+- 示例：
+  ```bash
+  python3 /home/ubuntu/asr_program/asr_quickstart.py \
+    --input "/home/ubuntu/asr_inputs" \
+    --output "/home/ubuntu/asr_outputs" \
+    --models-dir "/home/ubuntu/.cache/asrprogram/models" \
+    --model "large-v3"
+  ```
+- 典型日志片段（通过菜单 7 观察）：
+  ```text
+  [2024-05-01 12:34:56] Downloading model large-v3...
+  [2024-05-01 12:35:10] Loaded model in 14.2s
+  [2024-05-01 12:35:12] Processing /home/ubuntu/asr_inputs/demo.wav
+  [2024-05-01 12:35:45] Saved transcript to /home/ubuntu/asr_outputs/demo.json
+  ```
+- 若 `asr.non_interactive` 为 `false`，CLI 会提示当前脚本仍需交互输入，建议在上游仓库改造为 `argparse` 或使用 `expect` 等工具封装后再接入。
+- Hugging Face 变量注入逻辑：
+  - `huggingface.persist_login = true`：仅注入 `HF_HOME`，依赖远端已持久登录；
+  - `huggingface.persist_login = false`：临时注入 `HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行完毕后凭据不会落盘。
+  CLI 会在终端打印环境变量摘要，带 `token`/`secret`/`key` 的值会自动打码为 `***`。
+- 启动成功后可通过 `tmux ls` 在远端确认会话存在，日志将写入 `remote.log_file` 并可重复追加。
+
+### 菜单 7：实时日志监控
+
+- 程序通过 `ssh ... tail -n +1 -f <log_file>` 将远端日志逐行转发到本地，适用于监控模型下载、转录进度等输出；
+- 终端明确提示“按 Ctrl+C 结束”，中断后命令会返回退出码 130 并继续保留 tmux 会话；
+- 查看结束后终端会提示执行菜单 8 回传 ASR 结果（Round 6 将继续完善下载逻辑）。
+
+### 常见问题
+
+- `tmux: command not found`：说明远端缺少 tmux，请先执行菜单 9（或手动运行 `scripts/bootstrap_remote.sh`）重新部署环境；
+- `Permission denied`：检查 `ssh.user`、`ssh.keyfile`、远端目录权限及 `chmod`；如使用 WSL/cwRsync，确保密钥权限遵循 OpenSSH 限制；
+- 日志文件为空：确认入口脚本路径正确、命令参数无误；必要时在远端手动执行 README 中的示例命令，或检查 Hugging Face 下载是否因 token 失效而失败；
+- Hugging Face 模式差异：`persist_login=true` 适合长期节点，登录一次即可；`persist_login=false` 更安全，每次注入临时 token。若需撤销令牌，请访问 [Hugging Face Access Tokens](https://huggingface.co/settings/tokens) 删除旧 token 并更新 `config.yaml`。
+- `rsync` 降级说明：当本地没有 `rsync` 时自动使用 `scp -r`，缺乏增量同步能力；建议尽快安装 `rsync` 以缩短素材同步时间。
 
 ## Hugging Face 配置与安全
 `config.example.yaml` 中新增的 `huggingface` 段落支持两种工作模式：
 
-- **持久登录（`persist_login: true`）**：菜单 5 会在远端安装 `huggingface_hub[cli]` 并执行 `huggingface-cli login`，可选写入 Git Credential Helper，适合长期运行的部署。登录日志仅在失败时输出。
-- **运行时注入（`persist_login: false`）**：脚本不会在远端保存凭据。后续轮次（Round 5）会通过环境变量在执行 ASR 时临时注入 token。
+- **持久登录（`persist_login: true`）**：菜单 9 会在远端安装 `huggingface_hub[cli]` 并执行 `huggingface-cli login`，可选写入 Git Credential Helper，适合长期运行的部署。登录日志仅在失败时输出。
+- **运行时注入（`persist_login: false`）**：菜单 6 在启动 tmux 任务时临时注入 `HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行结束后不会在远端留下凭据。
 
 安全建议：
 
@@ -197,7 +270,7 @@ Deployed branch=main commit=a1b2c3d entry=OK
 - **Round 2**：已实现 Vultr 实例管理与 API 错误处理基础能力。
 - **Round 3**：已实现 `bootstrap_remote.sh`、远端环境健康检查与 Hugging Face 登录集成。
 - **Round 4**：实现远端仓库部署/更新与入口校验。
-- **Round 5**：实现 SSH 执行、文件传输与 tmux 作业管理。
+- **Round 5**：实现素材上传、tmux 后台运行 ASR 与实时日志监控。
 - **Round 6**：整合 ASR 运行流程，支持实时日志回传。
 - **Round 7**：增加结果回传与清理策略、完成功能测试。
 
@@ -206,6 +279,6 @@ Deployed branch=main commit=a1b2c3d entry=OK
 - **429 Too Many Requests**：触发 Vultr 限流。程序会自动指数退避重试，若仍失败请稍后再试或减少频繁操作。
 - **请求超时或网络错误**：可能是网络不稳定或 Vultr API 暂时不可用。请检查网络连通性并重试；必要时可在配置中自定义代理或稍后再访问。
 - **Permission denied (publickey)**：远端拒绝 SSH 连接。请确认 config.yaml 中的 `ssh.user` 与 `ssh.keyfile` 设置正确，并确保私钥已添加到 `ssh-agent` 或配置了 `~/.ssh/config`。
-- **git-lfs: command not found**：请重新执行菜单 5 或在远端手动运行 `git lfs install`，以初始化 Git LFS 环境。
-- **tmux: failed to connect to server**：通常是 tmux 尚未安装或缺少权限。运行菜单 5 后会自动安装；若仍失败，可检查 `$HOME/.tmux` 权限并执行 `tmux kill-server`。
-- **ffmpeg/网络检测失败**：远端脚本会标记为 FAIL。请确认系统包源可访问，并检查网络策略（如需代理可在 `.bashrc` 中设置），然后重新运行菜单 5。
+- **git-lfs: command not found**：请重新执行菜单 9 或在远端手动运行 `git lfs install`，以初始化 Git LFS 环境。
+- **tmux: failed to connect to server**：通常是 tmux 尚未安装或缺少权限。运行菜单 9 后会自动安装；若仍失败，可检查 `$HOME/.tmux` 权限并执行 `tmux kill-server`。
+- **ffmpeg/网络检测失败**：远端脚本会标记为 FAIL。请确认系统包源可访问，并检查网络策略（如需代理可在 `.bashrc` 中设置），然后重新运行菜单 9。
