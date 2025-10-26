@@ -66,6 +66,25 @@ def _extract_repo_host(repo_url: str) -> Optional[str]:
     return None
 
 
+# 定义辅助函数，将常见的 SSH 仓库地址转换为 HTTPS 形式。
+def _convert_repo_url_to_https(repo_url: str) -> Optional[str]:
+    if not repo_url:
+        return None
+    if repo_url.startswith("git@"):
+        host_part = repo_url.split("@", 1)[1]
+        if ":" in host_part:
+            host, path = host_part.split(":", 1)
+            normalized_path = path.lstrip("/")
+            return f"https://{host}/{normalized_path}"
+    parsed = urlparse(repo_url)
+    if parsed.scheme in {"ssh", "git+ssh"} and parsed.hostname:
+        path = (parsed.path or "").lstrip("/")
+        if path:
+            return f"https://{parsed.hostname}/{path}"
+        return f"https://{parsed.hostname}"
+    return None
+
+
 # 定义辅助函数，确保远端 known_hosts 中存在目标仓库的 SSH 指纹。
 def _ensure_known_host(
     user: str,
@@ -615,6 +634,7 @@ def deploy_repo(
     keyfile: Optional[str] = None,
     shallow: bool = True,
     with_submodules: bool = True,
+    prefer_https: bool = False,
 ) -> Dict[str, object]:
     # 初始化返回结果中的消息列表，用于记录执行过程。
     messages: List[str] = []
@@ -626,6 +646,7 @@ def deploy_repo(
         "project_dir": project_dir,
         "has_submodules": False,
         "used_shallow": False,
+        "repo_url": repo_url,
         "messages": messages,
     }
     # 若未提供必要参数，则立即返回失败结果。
@@ -652,6 +673,16 @@ def deploy_repo(
         messages.append("project_dir 解析失败")
         # 返回失败 payload。
         return result_payload
+    # 在执行 Git 操作前，根据配置决定是否将仓库地址转换为 HTTPS。
+    if prefer_https:
+        converted = _convert_repo_url_to_https(repo_url)
+        if converted and converted != repo_url:
+            repo_url = converted
+            console.print(
+                f"[green][file_transfer] 已将仓库地址转换为 HTTPS：{repo_url}[/green]"
+            )
+            messages.append(f"使用 HTTPS 克隆仓库：{repo_url}")
+    result_payload["repo_url"] = repo_url
     # 在执行 Git 操作前，确保远端已信任仓库所在的 SSH 主机。
     repo_host = _extract_repo_host(repo_url)
     if repo_host:

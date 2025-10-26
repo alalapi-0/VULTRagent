@@ -572,6 +572,11 @@ def handle_deploy_repo(config: Dict) -> None:
     git_conf = config.get("git", {}) if config else {}
     repo_url = git_conf.get("repo_url", "")
     branch = git_conf.get("branch", "")
+    prefer_https_raw = git_conf.get("prefer_https", False)
+    if isinstance(prefer_https_raw, str):
+        prefer_https = prefer_https_raw.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        prefer_https = bool(prefer_https_raw)
     # 校验仓库地址是否配置。
     if not repo_url:
         console.print("[red]配置文件缺少 git.repo_url，无法执行部署。[/red]")
@@ -599,6 +604,7 @@ def handle_deploy_repo(config: Dict) -> None:
             branch=branch,
             project_dir=project_dir,
             keyfile=ssh_key_path or None,
+            prefer_https=prefer_https,
         )
     except OSError as exc:
         # 捕获本地执行 ssh/git 命令时的系统错误。
@@ -642,7 +648,7 @@ def handle_deploy_repo(config: Dict) -> None:
         console.print("  • 菜单 7：在 tmux 中后台运行 asr_quickstart.py。")
     else:
         console.print("[red]❌ 部署或入口检查未通过，请检查上述输出并重试。[/red]")
-        console.print("[yellow]常见问题：确认 SSH 凭据、仓库分支与入口文件路径是否正确；如提示 python3 缺失，请先运行菜单 9 进行环境部署。[/yellow]")
+        console.print("[yellow]常见问题：确认 SSH 凭据、仓库分支与入口文件路径是否正确；如提示 python3 缺失，请先运行菜单 5 进行环境部署。[/yellow]")
 
 # 定义上传素材到远端的函数。
 def handle_upload_materials(config: Dict) -> None:
@@ -806,9 +812,9 @@ def handle_tail_logs(config: Dict) -> None:
         return
     # 根据退出码提供后续操作建议。
     if exit_code == 0:
-        console.print("[green]✅ 日志查看结束，可继续执行菜单 8 回传结果。[/green]")
+        console.print("[green]✅ 日志查看结束，可继续执行菜单 10 回传结果。[/green]")
     else:
-        console.print(f"[yellow]日志查看结束，退出码 {exit_code}。可根据需要执行菜单 8 回传结果。[/yellow]")
+        console.print(f"[yellow]日志查看结束，退出码 {exit_code}。可根据需要执行菜单 10 回传结果。[/yellow]")
 
 # 定义回传 ASR 结果的函数。
 def handle_fetch_results(config: Dict) -> None:
@@ -947,7 +953,7 @@ def handle_fetch_results(config: Dict) -> None:
     else:
         console.print("[yellow]检测到回传存在异常，已跳过远端清理操作。[/yellow]")
     # 给出下一步建议。
-    console.print("[blue]可继续执行菜单 9 停止远端任务或查看结果目录。[/blue]")
+    console.print("[blue]可继续执行菜单 11 停止远端任务或查看结果目录。[/blue]")
 
 # 定义停止或清理远端任务的函数。
 def handle_cleanup_remote(config: Dict) -> None:

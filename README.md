@@ -182,6 +182,7 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
 - **关键配置项**（位于 `config.yaml`）：
   - `git.repo_url`：支持 SSH（推荐部署密钥）或 HTTPS；
   - `git.branch`：目标分支名，若不存在将提示 `branch not found`；
+  - `git.prefer_https`：当值为 `true` 时会将 SSH 地址自动转换为 HTTPS，适合公共仓库或缺少 SSH 密钥的场景；
   - `remote.project_dir`：远端部署目录，脚本会自动创建并切换至该目录。
 - **兼容性与安全建议**：
   - 使用 SSH 克隆时建议为目标仓库配置只读 Deploy Key；
