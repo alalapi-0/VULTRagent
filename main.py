@@ -1042,13 +1042,13 @@ MENU_ACTIONS: Dict[str, Dict[str, Callable[[Dict], None]]] = {
     "2": {"label": "选择当前实例并保存", "handler": handle_select_instance},
     "3": {"label": "查看当前实例详情", "handler": handle_show_instance_details},
     "4": {"label": "连接并测试 SSH", "handler": handle_test_ssh},
-    "5": {"label": "上传本地素材到远端输入目录", "handler": handle_upload_materials},
-    "6": {"label": "在 tmux 中后台运行 asr_quickstart.py", "handler": handle_run_asr_tmux},
-    "7": {"label": "实时查看远端日志", "handler": handle_tail_logs},
-    "8": {"label": "回传 ASR 结果到本地", "handler": handle_fetch_results},
-    "9": {"label": "停止/清理远端任务", "handler": handle_cleanup_remote},
-    "10": {"label": "一键环境部署/检查（远端）", "handler": handle_remote_bootstrap},
-    "11": {"label": "部署/更新 ASR 仓库到远端", "handler": handle_deploy_repo},
+    "5": {"label": "一键环境部署/检查（远端）", "handler": handle_remote_bootstrap},
+    "6": {"label": "部署/更新 ASR 仓库到远端", "handler": handle_deploy_repo},
+    "7": {"label": "在 tmux 中后台运行 asr_quickstart.py", "handler": handle_run_asr_tmux},
+    "8": {"label": "上传本地素材到远端输入目录", "handler": handle_upload_materials},
+    "9": {"label": "实时查看远端日志", "handler": handle_tail_logs},
+    "10": {"label": "回传 ASR 结果到本地", "handler": handle_fetch_results},
+    "11": {"label": "停止/清理远端任务", "handler": handle_cleanup_remote},
     "12": {"label": "退出", "handler": lambda config: sys.exit(0)},  # 使用匿名函数统一出口逻辑。
 }
 
