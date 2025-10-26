@@ -39,6 +39,14 @@ VULTRagent/
 └── README.md                # 项目说明文档（本文件）
 ```
 
+远端部署后的项目根目录会额外包含用于音频输入与输出的子目录：
+
+```
+/home/ubuntu/asr_program/
+├── audio/      # 上传的音频文件
+├── output/     # 转写结果输出目录
+```
+
 ## 安装与运行步骤
 1. 克隆仓库到本地：
    ```bash
@@ -156,8 +164,11 @@ VULTRagent/
    - 更新包索引并安装 `git`、`git-lfs`、`python3`、`pip`、`tmux`、`rsync`、`ffmpeg`、`curl`、`ca-certificates` 等依赖；
    - 初始化 Git LFS；
    - 创建 `base_dir`、`project_dir`、`inputs_dir`、`outputs_dir`、`models_dir` 及日志目录；
+   - 自动派生并创建 `/home/ubuntu/asr_program/audio` 与 `/home/ubuntu/asr_program/output`，并将所有权调整为 `ubuntu:ubuntu`；
    - 可选执行 Hugging Face CLI 持久登录；
    - 运行健康检查：输出 Python、pip、tmux、ffmpeg、git、磁盘空间及网络连通性状态。
+
+部署脚本与文件同步流程会在必要时输出 `[OK] Created directories: ...`，健康检查表格也新增 `AUDIO_DIR` 与 `OUTPUT_DIR` 行以确认目录是否存在；若缺失会直接标记为失败。
 
 脚本采用 `set -euo pipefail` 并保证幂等，多次执行不会破坏现有配置。部署完成后，终端会展示类似如下的状态汇总：
 
