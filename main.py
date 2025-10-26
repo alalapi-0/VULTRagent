@@ -403,9 +403,77 @@ def handle_show_instance_details(config: Dict) -> None:
 
 # 定义处理 SSH 测试的函数。
 def handle_test_ssh(config: Dict) -> None:
-    # 调用 run_ssh_command 占位函数，传入示例参数。
-    run_ssh_command(host=config.get("ssh", {}).get("host", "example.com"),
-                    command="echo 'test'")
+    # 若未加载配置文件，则无法执行 SSH 测试。
+    if not config:
+        console.print("[red]未加载配置文件，请先创建 config.yaml。[/red]")
+        return
+
+    ssh_conf = config.get("ssh", {}) if config else {}
+    ssh_user = ssh_conf.get("user", "")
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请补全后再试。[/red]")
+        return
+
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+
+    target_host = ""
+    host_source = ""
+
+    try:
+        state = load_state()
+    except FileNotFoundError:
+        state = {}
+    except json.JSONDecodeError:
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+
+    if state:
+        target_host = state.get("ip", "")
+        if target_host:
+            host_source = ".state.json"
+
+    if not target_host:
+        target_host = ssh_conf.get("host", "")
+        if target_host:
+            host_source = "配置文件 ssh.host"
+
+    if not target_host:
+        console.print(
+            "[red]无法确定 SSH 目标主机。请先使用菜单 2 保存实例，或在 config.yaml 中配置 ssh.host。[/red]"
+        )
+        return
+
+    test_command = (
+        ssh_conf.get("test_command")
+        or "echo '✅ SSH 连接正常'; whoami; hostname; uptime"
+    )
+    remote_command = f"bash -lc {shlex.quote(test_command)}"
+
+    source_display = host_source or "未知"
+    console.print(
+        f"[blue]正在测试 SSH 连接：{ssh_user}@{target_host}（来源：{source_display}）[/blue]"
+    )
+    if ssh_key_path:
+        console.print(f"[blue]使用私钥：{ssh_key_path}[/blue]")
+    console.print(f"[blue]执行命令：{test_command}[/blue]")
+
+    try:
+        result = run_ssh_command(
+            host=target_host,
+            user=ssh_user,
+            keyfile=ssh_key_path or None,
+            command=remote_command,
+        )
+    except OSError as exc:
+        console.print(f"[red]执行 ssh 命令失败：{exc}[/red]")
+        return
+
+    if result.returncode == 0:
+        console.print("[green]✅ SSH 测试成功。[/green]")
+    else:
+        console.print(f"[red]❌ SSH 测试失败，返回码 {result.returncode}。[/red]")
+        console.print("[yellow]请检查 IP、用户名、私钥路径以及安全组设置后重试。[/yellow]")
 
 # 定义运行远端环境部署的函数。
 def handle_remote_bootstrap(config: Dict) -> None:
