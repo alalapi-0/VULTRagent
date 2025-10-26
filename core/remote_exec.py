@@ -20,7 +20,15 @@ def _build_target(host: str, user: Optional[str]) -> str:
 # 定义一个辅助函数，用于构建 ssh 命令的公共参数列表。
 def _base_ssh_args(host: str, user: Optional[str], keyfile: Optional[str]) -> Sequence[str]:
     # 从基础命令 ssh 开始，并启用 BatchMode 避免交互式提示。
-    args = ["ssh", "-o", "BatchMode=yes"]
+    args = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
     # 若提供了私钥路径，则加入 -i 参数。
     if keyfile:
         args.extend(["-i", keyfile])
@@ -81,7 +89,16 @@ def run_ssh_command(host: str, command: str, user: Optional[str] = None,
 def scp_upload(local_path: str, remote_path: str, host: str, user: Optional[str] = None,
                keyfile: Optional[str] = None) -> None:
     # 以 scp 为基础命令并启用 -p 参数保留文件时间戳。
-    args = ["scp", "-p"]
+    args = [
+        "scp",
+        "-p",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
     # 如果提供了私钥路径，则加入 -i 选项。
     if keyfile:
         args.extend(["-i", keyfile])

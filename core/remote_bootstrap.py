@@ -3,12 +3,16 @@
 
 # 导入 json 模块以在解析输出时使用（例如调试时序列化）。
 import json
+# 导入 os 模块用于在上传后清理临时文件。
+import os
 # 导入 pathlib.Path 用于处理跨平台的文件路径。
 from pathlib import Path
 # 导入 re 模块用于匹配脚本输出中的状态行。
 import re
 # 导入 shlex 模块用于安全地构建 shell 命令。
 import shlex
+# 导入 tempfile 模块以便在上传前生成临时文件。
+import tempfile
 # 导入 typing 模块中的 Dict 类型用于类型注解。
 from typing import Dict
 
@@ -87,8 +91,23 @@ def upload_and_bootstrap(user: str, host: str, keyfile: str,
     report: Dict = {"upload": {"status": "PENDING", "message": ""},
                     "execution": {"status": "PENDING", "message": ""},
                     "checks": {}}
-    # 调用 scp_upload 将脚本复制到远端指定路径。
-    scp_upload(str(script_path), remote_tmp_path, host, user=user, keyfile=keyfile or None)
+    # 为了确保远端可以使用 Bash 正确执行脚本，需要保证换行符为 LF。
+    # 在 Windows 环境下，仓库文件可能被签出为 CRLF，这会导致远端 bash
+    # 出现 `$'\r': command not found` 报错。为此在上传前将脚本内容写入
+    # 一个临时文件，并强制使用 Unix 换行符保存。
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="\n") as temp_file:
+        temp_file.write(script_path.read_text(encoding="utf-8"))
+        temp_path = temp_file.name
+
+    try:
+        # 调用 scp_upload 将临时脚本复制到远端指定路径。
+        scp_upload(temp_path, remote_tmp_path, host, user=user, keyfile=keyfile or None)
+    finally:
+        # 无论上传是否成功，都尝试删除临时文件以避免残留。
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
     # 更新上传状态为成功。
     report["upload"] = {"status": "OK", "message": "脚本已上传"}
     # 合并远端目录配置与 Hugging Face 配置以构建环境变量字典。
