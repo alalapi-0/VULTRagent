@@ -65,6 +65,10 @@ CONFIG_PATH = "config.yaml"
 # 定义示例配置文件路径，用于在找不到实际配置时加载示例内容。
 CONFIG_EXAMPLE_PATH = "config.example.yaml"
 
+# 定义旧版本中默认使用的远端音频与输出目录，便于自动迁移。
+LEGACY_REMOTE_INPUT_DIR = "/home/ubuntu/asr_inputs"
+LEGACY_REMOTE_OUTPUT_DIR = "/home/ubuntu/asr_outputs"
+
 # 定义状态文件的路径常量。
 STATE_PATH = Path(__file__).resolve().parent / ".state.json"
 # 定义 Vultr API 默认基础地址常量。
@@ -180,13 +184,60 @@ def _load_yaml_file(path: str) -> Dict:
         ) from exc
 
 
+def _normalize_remote_paths(config_data: Dict) -> None:
+    """将旧版本的远端路径配置迁移到新的 asr_program 目录结构。"""
+
+    if not config_data:
+        return
+
+    remote_conf = config_data.setdefault("remote", {})
+    project_dir = (remote_conf.get("project_dir", "") or "").strip()
+    project_dir = project_dir.rstrip("/")
+    derived_inputs = f"{project_dir}/audio" if project_dir else ""
+    derived_outputs = f"{project_dir}/output" if project_dir else ""
+
+    inputs_dir = (remote_conf.get("inputs_dir") or "").strip()
+    outputs_dir = (remote_conf.get("outputs_dir") or "").strip()
+
+    changed = False
+
+    if derived_inputs and inputs_dir in {"", LEGACY_REMOTE_INPUT_DIR}:
+        remote_conf["inputs_dir"] = derived_inputs
+        inputs_dir = derived_inputs
+        changed = True
+
+    if derived_outputs and outputs_dir in {"", LEGACY_REMOTE_OUTPUT_DIR}:
+        remote_conf["outputs_dir"] = derived_outputs
+        outputs_dir = derived_outputs
+        changed = True
+
+    asr_conf = config_data.setdefault("asr", {})
+    asr_args = asr_conf.setdefault("args", {})
+
+    if inputs_dir and asr_args.get("input_dir") in {None, "", LEGACY_REMOTE_INPUT_DIR}:
+        asr_args["input_dir"] = inputs_dir
+        changed = True
+
+    if outputs_dir and asr_args.get("output_dir") in {None, "", LEGACY_REMOTE_OUTPUT_DIR}:
+        asr_args["output_dir"] = outputs_dir
+        changed = True
+
+    if changed:
+        console.print(
+            "[yellow]检测到旧版目录配置，已自动迁移到 /home/ubuntu/asr_program/audio 与 /home/ubuntu/asr_program/output。[/yellow]"
+        )
+
+
 def load_configuration() -> Dict:
     # 该函数尝试读取真实配置文件，否则回退到示例配置。
     if os.path.exists(CONFIG_PATH):
-        return _load_yaml_file(CONFIG_PATH)
+        config_data = _load_yaml_file(CONFIG_PATH)
+        _normalize_remote_paths(config_data)
+        return config_data
 
     # 如果真实配置不存在，则读取示例配置提醒用户。
     config_data = _load_yaml_file(CONFIG_EXAMPLE_PATH)
+    _normalize_remote_paths(config_data)
     console.print("[yellow]未找到 config.yaml，使用示例配置运行占位菜单。[/yellow]")
     return config_data
 

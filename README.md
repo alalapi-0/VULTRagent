@@ -248,8 +248,8 @@ Deployed branch=main commit=a1b2c3d entry=OK
    - **WSL**：在 Windows 11/10 上启用 WSL，并在 Ubuntu 子系统中运行 `sudo apt install rsync`；
    - **cwRsync**：安装 [cwRsync](https://www.itefix.net/cwrsync) 并在 PowerShell 中调用 `rsync`；若遇到权限问题，可改用默认的 `scp` 降级模式。
 4. 上传成功后终端会提示统计命令，例如：
-   ```bash
-   ssh -i ~/.ssh/id_rsa ubuntu@203.0.113.10 'find /home/ubuntu/asr_inputs -type f | wc -l'
+  ```bash
+  ssh -i ~/.ssh/id_rsa ubuntu@203.0.113.10 'find /home/ubuntu/asr_program/audio -type f | wc -l'
    ```
    该命令可在远端统计素材数量，验证是否传输完整。
 
@@ -270,8 +270,8 @@ Deployed branch=main commit=a1b2c3d entry=OK
 - 示例：
   ```bash
   python3 /home/ubuntu/asr_program/asr_quickstart.py \
-    --input "/home/ubuntu/asr_inputs" \
-    --output "/home/ubuntu/asr_outputs" \
+    --input "/home/ubuntu/asr_program/audio" \
+    --output "/home/ubuntu/asr_program/output" \
     --models-dir "/home/ubuntu/.cache/asrprogram/models" \
     --model "large-v3"
   ```
@@ -279,8 +279,8 @@ Deployed branch=main commit=a1b2c3d entry=OK
   ```text
   [2024-05-01 12:34:56] Downloading model large-v3...
   [2024-05-01 12:35:10] Loaded model in 14.2s
-  [2024-05-01 12:35:12] Processing /home/ubuntu/asr_inputs/demo.wav
-  [2024-05-01 12:35:45] Saved transcript to /home/ubuntu/asr_outputs/demo.json
+  [2024-05-01 12:35:12] Processing /home/ubuntu/asr_program/audio/demo.wav
+  [2024-05-01 12:35:45] Saved transcript to /home/ubuntu/asr_program/output/demo.json
   ```
 - 若 `asr.non_interactive` 为 `false`，CLI 会提示当前脚本仍需交互输入，建议在上游仓库改造为 `argparse` 或使用 `expect` 等工具封装后再接入。
 - Hugging Face 变量注入逻辑：
