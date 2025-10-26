@@ -10,6 +10,8 @@ from rich.console import Console
 
 # 从 core.remote_exec 模块导入 tmux 启动函数。
 from core.remote_exec import start_remote_job_in_tmux
+# 从 core.file_transfer 模块导入目录保障函数，确保运行前结构已就绪。
+from core.file_transfer import ensure_remote_io_dirs
 
 # 创建 Console 实例用于输出提示信息。
 console = Console()
@@ -62,9 +64,24 @@ def run_asr_job(
     tmux_session = remote_cfg.get("tmux_session", "vultragentsvc")
     log_file = remote_cfg.get("log_file", "")
     project_dir = remote_cfg.get("project_dir", "")
+    inputs_dir = remote_cfg.get("inputs_dir", "")
+    outputs_dir = remote_cfg.get("outputs_dir", "")
     # 若缺少项目目录或日志路径，则无法继续。
     if not project_dir or not log_file:
         console.print("[red][asr_runner] 配置缺少 remote.project_dir 或 remote.log_file。[/red]")
+        return 1
+    # 在启动 ASR 之前确保远端目录结构已经创建并具备权限。
+    try:
+        ensure_remote_io_dirs(
+            user=user,
+            host=host,
+            project_dir=project_dir,
+            remote_inputs_dir=inputs_dir,
+            remote_outputs_dir=outputs_dir,
+            keyfile=keyfile,
+        )
+    except RuntimeError as exc:
+        console.print(f"[red][asr_runner] 远端目录准备失败：{exc}[/red]")
         return 1
     # 解析 ASR 配置，获取入口脚本、Python 解释器及参数列表。
     asr_cfg = cfg.get("asr", {}) if cfg else {}

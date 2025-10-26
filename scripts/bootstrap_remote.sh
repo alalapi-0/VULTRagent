@@ -57,6 +57,19 @@ OUTPUTS_DIR=${OUTPUTS_DIR:-""}
 MODELS_DIR=${MODELS_DIR:-""}
 LOG_FILE=${LOG_FILE:-""}
 
+# 基于配置初始化音频目录变量，优先使用 inputs_dir 值。
+AUDIO_DIR="$INPUTS_DIR"
+# 若 inputs_dir 留空但提供了 project_dir，则在项目目录下派生 audio 子目录。
+if [ -z "$AUDIO_DIR" ] && [ -n "$PROJECT_DIR" ]; then
+  AUDIO_DIR="${PROJECT_DIR%/}/audio"
+fi
+# 基于配置初始化输出目录变量，优先使用 outputs_dir 值。
+OUTPUT_DIR="$OUTPUTS_DIR"
+# 若 outputs_dir 留空但提供了 project_dir，则在项目目录下派生 output 子目录。
+if [ -z "$OUTPUT_DIR" ] && [ -n "$PROJECT_DIR" ]; then
+  OUTPUT_DIR="${PROJECT_DIR%/}/output"
+fi
+
 # 组装一个目录数组以便统一创建。
 DIRECTORIES_TO_CREATE=()
 
@@ -91,6 +104,27 @@ for directory in "${DIRECTORIES_TO_CREATE[@]}"; do
   # 设置权限为 755，满足大多数服务的访问需求。
   chmod 755 "$directory" || true
 done
+
+# 当配置了项目目录时再额外执行一次确保其存在，避免派生目录时失败。
+if [ -n "$PROJECT_DIR" ]; then
+  mkdir -p "$PROJECT_DIR"
+fi
+# 如果计算出了音频目录，则创建并保持幂等。
+if [ -n "$AUDIO_DIR" ]; then
+  mkdir -p "$AUDIO_DIR"
+fi
+# 如果计算出了输出目录，则创建并保持幂等。
+if [ -n "$OUTPUT_DIR" ]; then
+  mkdir -p "$OUTPUT_DIR"
+fi
+# 若音频或输出目录存在，则将所有权调整为 ubuntu 用户，避免权限问题。
+if [ -n "$AUDIO_DIR" ] || [ -n "$OUTPUT_DIR" ]; then
+  chown -R ubuntu:ubuntu ${AUDIO_DIR:+"$AUDIO_DIR"} ${OUTPUT_DIR:+"$OUTPUT_DIR"} || true
+fi
+# 若两个目录均计算成功，则输出提示便于日志检索。
+if [ -n "$AUDIO_DIR" ] && [ -n "$OUTPUT_DIR" ]; then
+  echo "[OK] Created directories: $AUDIO_DIR, $OUTPUT_DIR"
+fi
 
 # 准备处理 Hugging Face 登录相关的环境变量。
 PERSIST_HF_LOGIN=${PERSIST_HF_LOGIN:-"false"}
@@ -135,6 +169,25 @@ if [ "${PERSIST_HF_LOGIN,,}" = "true" ] && [ -n "$HF_TOKEN_FROM_AGENT" ]; then
   # 输出 CLI 登录日志内容以便调试（安全起见仅在失败时打印）。
   if [ "$HF_LOGIN_STATUS" = "FAIL" ]; then
     cat /tmp/hf_login.log || true
+  fi
+fi
+
+# 检查音频目录是否创建成功，如失败则标记整体状态。
+if [ -n "$AUDIO_DIR" ]; then
+  if [ -d "$AUDIO_DIR" ]; then
+    log_status "AUDIO_DIR" "OK" "$AUDIO_DIR 存在"
+  else
+    log_status "AUDIO_DIR" "FAIL" "$AUDIO_DIR 不存在"
+    OVERALL_STATUS="FAIL"
+  fi
+fi
+# 检查输出目录是否创建成功，如失败则标记整体状态。
+if [ -n "$OUTPUT_DIR" ]; then
+  if [ -d "$OUTPUT_DIR" ]; then
+    log_status "OUTPUT_DIR" "OK" "$OUTPUT_DIR 存在"
+  else
+    log_status "OUTPUT_DIR" "FAIL" "$OUTPUT_DIR 不存在"
+    OVERALL_STATUS="FAIL"
   fi
 fi
 

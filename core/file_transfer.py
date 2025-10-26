@@ -34,6 +34,77 @@ from core.remote_exec import run_ssh_command
 console = Console()
 
 
+# 定义一个辅助函数，用于在远端幂等地创建项目、音频与输出目录。
+def ensure_remote_io_dirs(
+    user: str,
+    host: str,
+    project_dir: str,
+    remote_inputs_dir: Optional[str],
+    remote_outputs_dir: Optional[str],
+    keyfile: Optional[str] = None,
+) -> None:
+    """确保远端项目目录及音频/输出子目录存在，并统一调整所有权。"""
+
+    # 初始化一个列表，用于收集需要创建的所有目录。
+    candidate_dirs: List[str] = []
+    # 若提供了项目目录，则加入候选列表。
+    if project_dir:
+        candidate_dirs.append(project_dir)  # 将项目目录加入待创建列表。
+    # 若提供了音频目录，则加入候选列表。
+    if remote_inputs_dir:
+        candidate_dirs.append(remote_inputs_dir)  # 将音频目录加入待创建列表。
+    # 若提供了输出目录，则加入候选列表。
+    if remote_outputs_dir:
+        candidate_dirs.append(remote_outputs_dir)  # 将输出目录加入待创建列表。
+    # 使用有序去重逻辑，避免重复执行 mkdir。
+    unique_dirs: List[str] = []
+    for directory in candidate_dirs:
+        if directory not in unique_dirs:  # 避免重复加入相同路径。
+            unique_dirs.append(directory)
+    # 构造需要执行的远端命令列表。
+    commands: List[str] = []
+    # 当存在目录需要创建时，拼接 mkdir -p 命令。
+    if unique_dirs:
+        quoted = " ".join(_quote(path) for path in unique_dirs)  # 拼接经转义的目录参数。
+        commands.append(f"mkdir -p {quoted}")  # 构造 mkdir 命令。
+    # 初始化一个列表，用于收集需要执行 chown 的目录。
+    chown_targets: List[str] = []
+    # 若配置了音频目录，则将其加入 chown 列表。
+    if remote_inputs_dir:
+        chown_targets.append(remote_inputs_dir)  # 将音频目录加入 chown 列表。
+    # 若配置了输出目录，则将其加入 chown 列表。
+    if remote_outputs_dir:
+        chown_targets.append(remote_outputs_dir)  # 将输出目录加入 chown 列表。
+    # 同样执行有序去重，避免重复参数。
+    unique_chown: List[str] = []
+    for directory in chown_targets:
+        if directory not in unique_chown:  # 确保同一目录仅出现一次。
+            unique_chown.append(directory)
+    # 当存在需要调整所有权的目录时，拼接 chown 命令。
+    if unique_chown:
+        quoted_chown = " ".join(_quote(path) for path in unique_chown)  # 拼接 chown 参数。
+        commands.append(f"chown -R ubuntu:ubuntu {quoted_chown}")  # 构造 chown 命令。
+    # 如果没有命令需要执行，则提前返回。
+    if not commands:
+        return
+    # 依次执行构建好的命令列表，一旦失败则抛出异常。
+    for command in commands:
+        result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)  # 执行远端命令。
+        if result["returncode"] != 0:
+            raise RuntimeError(f"failed to ensure remote directory via: {command}")
+    # 构造一个用于展示的目录摘要，优先突出音频与输出路径。
+    display_targets = [
+        path  # 保留需要在日志中展示的路径。
+        for path in [remote_inputs_dir or "", remote_outputs_dir or ""]
+        if path
+    ]
+    # 当有需要展示的目录时输出统一的日志格式。
+    if display_targets:
+        console.print(
+            f"[green][file_transfer] [OK] Created directories: {', '.join(display_targets)}[/green]"
+        )
+
+
 # 定义一个辅助函数，用于安全地将路径或参数转换为 shell 可接受的形式。
 def _quote(value: str) -> str:
     # 通过 shlex.quote 处理可能包含空格或特殊字符的值。
@@ -117,6 +188,8 @@ def upload_local_to_remote(
     host: str,
     remote_inputs_dir: str,
     keyfile: Optional[str] = None,
+    remote_project_dir: Optional[str] = None,  # 远端项目根目录，可为空。
+    remote_outputs_dir: Optional[str] = None,  # 远端输出目录，可为空。
 ) -> None:
     # 展开本地路径以确保兼容 ~ 与相对路径。
     local_dir = Path(local_path).expanduser().resolve()
@@ -128,6 +201,15 @@ def upload_local_to_remote(
     if not remote_inputs_dir:
         console.print("[red][file_transfer] 缺少 remote.inputs_dir 配置，无法确定上传目标。[/red]")
         raise ValueError("missing remote inputs_dir")
+    # 在上传前确保远端项目、音频与输出目录存在。
+    ensure_remote_io_dirs(
+        user=user,
+        host=host,
+        project_dir=remote_project_dir or "",
+        remote_inputs_dir=remote_inputs_dir,
+        remote_outputs_dir=remote_outputs_dir or "",
+        keyfile=keyfile,
+    )
     # 检查本地目录是否存在。
     if not local_dir.exists():
         console.print(f"[red][file_transfer] 本地目录不存在：{local_dir}[/red]")
@@ -494,6 +576,8 @@ def fetch_results_from_remote(
     backoff_sec: int = 3,
     verify_manifest: bool = True,
     manifest_name: str = "_manifest.txt",
+    remote_project_dir: Optional[str] = None,  # 远端项目根目录，可为空。
+    remote_inputs_dir: Optional[str] = None,  # 远端音频目录，可为空。
 ) -> Dict[str, object]:
     # 初始化返回结构，默认表示未验证。
     summary: Dict[str, object] = {
@@ -504,6 +588,15 @@ def fetch_results_from_remote(
         "size_mismatch": [],
         "manifest": None,
     }
+    # 在回传前同样确保远端目录结构已经创建。
+    ensure_remote_io_dirs(
+        user=user,
+        host=host,
+        project_dir=remote_project_dir or "",
+        remote_inputs_dir=remote_inputs_dir or "",
+        remote_outputs_dir=remote_outputs_dir,
+        keyfile=keyfile,
+    )
     # 确保本地目录存在。
     Path(local_results_dir).mkdir(parents=True, exist_ok=True)
     # 计算远端与本地的清单路径。

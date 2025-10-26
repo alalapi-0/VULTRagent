@@ -681,6 +681,8 @@ def handle_upload_materials(config: Dict) -> None:
     # 获取远端 inputs 目录配置。
     remote_conf = config.get("remote", {})
     inputs_dir = remote_conf.get("inputs_dir", "")
+    project_dir = remote_conf.get("project_dir", "")
+    outputs_dir = remote_conf.get("outputs_dir", "")
     if not inputs_dir:
         console.print("[red]配置文件缺少 remote.inputs_dir，无法确定上传目标。[/red]")
         return
@@ -697,6 +699,8 @@ def handle_upload_materials(config: Dict) -> None:
             host=ip_address,
             remote_inputs_dir=inputs_dir,
             keyfile=ssh_key_path or None,
+            remote_project_dir=project_dir,
+            remote_outputs_dir=outputs_dir,
         )
     except (FileNotFoundError, NotADirectoryError) as exc:
         console.print(f"[red]上传失败：{exc}[/red]")
@@ -849,6 +853,8 @@ def handle_fetch_results(config: Dict) -> None:
     # 解析远端结果目录。
     remote_conf = config.get("remote", {})
     outputs_dir = remote_conf.get("outputs_dir", "")
+    project_dir = remote_conf.get("project_dir", "")
+    inputs_dir = remote_conf.get("inputs_dir", "")
     if not outputs_dir:
         console.print("[red]配置文件缺少 remote.outputs_dir，无法回传结果。[/red]")
         return
@@ -895,6 +901,8 @@ def handle_fetch_results(config: Dict) -> None:
             backoff_sec=max(backoff, 1),
             verify_manifest=bool(verify_manifest),
             manifest_name=manifest_name,
+            remote_project_dir=project_dir,
+            remote_inputs_dir=inputs_dir,
         )
     except (subprocess.CalledProcessError, OSError) as exc:
         console.print(f"[red]回传过程中发生错误：{exc}[/red]")
