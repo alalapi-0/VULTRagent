@@ -98,12 +98,13 @@ def run_asr_job(
     if hf_home:
         env_vars["HF_HOME"] = hf_home
     persist_login = hf_cfg.get("persist_login", True)
-    if not persist_login:
-        token = hf_cfg.get("token", "")
-        if token:
+    token = hf_cfg.get("token", "")
+    if token:
+        env_vars["HF_TOKEN"] = token
+        if not persist_login:
             env_vars["HUGGINGFACE_HUB_TOKEN"] = token
-        else:
-            console.print("[yellow][asr_runner] 未提供 Hugging Face token，可能无法下载模型。[/yellow]")
+    elif not persist_login:
+        console.print("[yellow][asr_runner] 未提供 Hugging Face token，可能无法下载模型。[/yellow]")
     # 输出环境变量注入摘要，敏感值替换为 ***。
     if env_vars:
         redacted = []

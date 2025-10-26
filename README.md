@@ -284,8 +284,8 @@ Deployed branch=main commit=a1b2c3d entry=OK
   ```
 - 若 `asr.non_interactive` 为 `false`，CLI 会提示当前脚本仍需交互输入，建议在上游仓库改造为 `argparse` 或使用 `expect` 等工具封装后再接入。
 - Hugging Face 变量注入逻辑：
-  - `huggingface.persist_login = true`：仅注入 `HF_HOME`，依赖远端已持久登录；
-  - `huggingface.persist_login = false`：临时注入 `HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行完毕后凭据不会落盘。
+  - `huggingface.persist_login = true`：注入 `HF_HOME`（若配置）与 `HF_TOKEN`（若提供 token），依赖远端已持久登录；
+  - `huggingface.persist_login = false`：临时注入 `HF_TOKEN`、`HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行完毕后凭据不会落盘。
   CLI 会在终端打印环境变量摘要，带 `token`/`secret`/`key` 的值会自动打码为 `***`。
 - 启动成功后可通过 `tmux ls` 在远端确认会话存在，日志将写入 `remote.log_file` 并可重复追加。
 
@@ -307,7 +307,7 @@ Deployed branch=main commit=a1b2c3d entry=OK
 `config.example.yaml` 中新增的 `huggingface` 段落支持两种工作模式：
 
 - **持久登录（`persist_login: true`）**：菜单 5 会在远端安装 `huggingface_hub[cli]` 并执行 `huggingface-cli login`，可选写入 Git Credential Helper，适合长期运行的部署。登录日志仅在失败时输出。
-- **运行时注入（`persist_login: false`）**：菜单 7 在启动 tmux 任务时临时注入 `HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行结束后不会在远端留下凭据。
+- **运行时注入（`persist_login: false`）**：菜单 7 在启动 tmux 任务时临时注入 `HF_TOKEN`、`HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行结束后不会在远端留下凭据。
 
 安全建议：
 
