@@ -98,7 +98,15 @@ def upload_local_to_remote(
     # 统一构造远端目标字符串，确保以斜杠结尾表示目录。
     remote_target = f"{user}@{host}:{remote_inputs_dir.rstrip('/')}/"
     # 构造 SSH 选项字符串，用于 rsync -e 传递。
-    ssh_parts = ["ssh", "-o", "BatchMode=yes"]
+    ssh_parts = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
     # 如果提供了密钥文件，则追加 -i 选项。
     if keyfile:
         ssh_parts.extend(["-i", keyfile])
@@ -127,7 +135,17 @@ def upload_local_to_remote(
     # 若 rsync 不可用则打印降级提示。
     console.print("[yellow][file_transfer] 未检测到 rsync，降级使用 scp -r 批量上传，性能较差。[/yellow]")
     # 构建 scp 参数，保留时间戳并递归复制。
-    scp_args = ["scp", "-p", "-r"]
+    scp_args = [
+        "scp",
+        "-p",
+        "-r",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
     # 若配置了密钥文件则同样传递给 scp。
     if keyfile:
         scp_args.extend(["-i", keyfile])
@@ -229,7 +247,17 @@ def _run_scp_download(
     keyfile: Optional[str],
 ) -> None:
     # 构造基础的 scp 参数，开启时间戳保留并递归下载。
-    scp_args = ["scp", "-p", "-r"]
+    scp_args = [
+        "scp",
+        "-p",
+        "-r",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
     # 若存在密钥文件则加入 -i 选项。
     if keyfile:
         scp_args.extend(["-i", keyfile])
@@ -268,7 +296,15 @@ def download_with_retry(
     # 构建远端目标字符串，末尾保留斜杠以复制目录内容。
     remote_target = f"{user}@{host}:{remote_dir.rstrip('/')}/"
     # 构建 SSH 子命令，供 rsync 的 -e 选项使用。
-    ssh_parts = ["ssh", "-o", "BatchMode=yes"]
+    ssh_parts = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
     # 若提供了密钥文件则追加。
     if keyfile:
         ssh_parts.extend(["-i", keyfile])
