@@ -100,7 +100,7 @@ def run_asr_job(
         console.print("[blue][asr_runner] 未注入额外环境变量，沿用远端持久凭据。[/blue]")
     # 提示用户即将启动 tmux 会话以及日志存放路径。
     console.print(f"[blue][asr_runner] 即将在 {host} 的 tmux 会话 {tmux_session} 中运行命令。[/blue]")
-    console.print(f"[blue][asr_runner] 日志将追加到 {log_file}，请通过菜单 7 查看。[/blue]")
+    console.print(f"[blue][asr_runner] 日志将追加到 {log_file}，请通过菜单 9 查看。[/blue]")
     # 调用核心函数启动 tmux 作业，并返回其退出码。
     return start_remote_job_in_tmux(
         user=user,
