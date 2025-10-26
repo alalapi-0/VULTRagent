@@ -131,6 +131,17 @@ PERSIST_HF_LOGIN=${PERSIST_HF_LOGIN:-"false"}
 HF_TOKEN_FROM_AGENT=${HF_TOKEN_FROM_AGENT:-""}
 HF_HOME=${HF_HOME:-""}
 SET_HF_GIT_CREDENTIAL=${SET_HF_GIT_CREDENTIAL:-"true"}
+HF_TOKEN=${HF_TOKEN:-""}
+
+# 如果远端环境尚未定义 HF_TOKEN，而配置中提供了 token，则自动补充该变量。
+if [ -z "$HF_TOKEN" ] && [ -n "$HF_TOKEN_FROM_AGENT" ]; then
+  HF_TOKEN="$HF_TOKEN_FROM_AGENT"
+fi
+
+# 将 HF_TOKEN 导出到后续流程，便于健康检查或其他脚本复用。
+if [ -n "$HF_TOKEN" ]; then
+  export HF_TOKEN
+fi
 
 # 记录 Hugging Face 登录状态，默认值为 SKIPPED。
 HF_LOGIN_STATUS="SKIPPED"
@@ -170,6 +181,13 @@ if [ "${PERSIST_HF_LOGIN,,}" = "true" ] && [ -n "$HF_TOKEN_FROM_AGENT" ]; then
   if [ "$HF_LOGIN_STATUS" = "FAIL" ]; then
     cat /tmp/hf_login.log || true
   fi
+fi
+
+# 记录 HF_TOKEN 的可用性，方便上层在健康检查报告中观察状态。
+if [ -n "$HF_TOKEN" ]; then
+  log_status "HF_TOKEN" "OK" "HF_TOKEN 已配置"
+else
+  log_status "HF_TOKEN" "SKIPPED" "未提供 HF_TOKEN"
 fi
 
 # 检查音频目录是否创建成功，如失败则标记整体状态。
