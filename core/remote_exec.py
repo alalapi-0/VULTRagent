@@ -61,11 +61,15 @@ def run_ssh_command(host: str, command: str, user: Optional[str] = None,
     # 将远端命令追加到 ssh 参数列表中。
     args.append(remote_command)
     # 启动子进程并开启文本模式，以便逐行读取输出。
+    # 强制以 UTF-8 解码远端输出，避免在 Windows 下因为默认编码 (如 gbk)
+    # 无法处理部分字符而导致 UnicodeDecodeError。
     process = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
     )
     # 通过辅助函数实时读取输出并收集。
@@ -174,7 +178,16 @@ def tail_remote_log(
     # 提示用户如何退出日志追踪。
     print(f"[remote_exec] ▶ tail -f {log_path}（按 Ctrl+C 结束）")
     # 启动子进程并实时转发输出。
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    # tail 同样指定 UTF-8 编码，保持与 run_ssh_command 的输出行为一致。
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
     try:
         for line in iter(process.stdout.readline, ""):
             print(line, end="")
