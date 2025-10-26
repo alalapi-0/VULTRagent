@@ -214,3 +214,29 @@ def stop_tmux_session(
         print(f"[remote_exec] ⚠️ 无法停止 tmux 会话 {session}，可能不存在。")
     # 返回命令退出码供调用方处理。
     return result.returncode
+
+
+# 定义一个函数用于检测远端 tmux 会话是否存在。
+def has_tmux_session(
+    user: str,
+    host: str,
+    session: str,
+    keyfile: Optional[str] = None,
+) -> bool:
+    # 若缺少必要参数，则直接返回 False。
+    if not host or not session or not user:
+        print("[remote_exec] ⚠️ 缺少 host/user/session，无法检测 tmux 会话。")
+        return False
+    # 构造 tmux has-session 命令以检测会话存在性。
+    command = f"tmux has-session -t {shlex.quote(session)}"
+    # 执行命令并获取返回码。
+    result = run_ssh_command(host=host, user=user, keyfile=keyfile, command=command)
+    # 根据返回码判断会话是否存在。
+    exists = result.returncode == 0
+    # 输出调试信息帮助用户了解状态。
+    if exists:
+        print(f"[remote_exec] ✅ 检测到 tmux 会话 {session} 正在运行。")
+    else:
+        print(f"[remote_exec] ℹ️ 未检测到 tmux 会话 {session}。")
+    # 返回布尔结果供调用方使用。
+    return exists
