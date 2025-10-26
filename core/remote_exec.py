@@ -131,6 +131,19 @@ def start_remote_job_in_tmux(
     if not log_file:
         print("[remote_exec] ❌ 缺少日志文件路径，无法重定向输出。")
         return 1
+    # 如果目标 tmux 会话已存在，则尝试提前停止，避免重复创建报错。
+    if has_tmux_session(user=user, host=host, session=session, keyfile=keyfile):
+        print(
+            f"[remote_exec] ℹ️ tmux 会话 {session} 已存在，正在尝试停止以便重新创建。"
+        )
+        stop_code = stop_tmux_session(
+            user=user, host=host, session=session, keyfile=keyfile
+        )
+        if stop_code != 0:
+            print(
+                f"[remote_exec] ❌ 无法停止已存在的 tmux 会话 {session}，终止启动流程。"
+            )
+            return stop_code
     # 计算日志目录并在远端创建，避免 tee 写入失败。
     log_dir = os.path.dirname(log_file)
     if log_dir:
