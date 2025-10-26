@@ -638,8 +638,8 @@ def handle_deploy_repo(config: Dict) -> None:
     entry_ok = bool(verify_info.get("exists")) and bool(verify_info.get("py_compiles"))
     if deploy_info.get("ok") and entry_ok:
         console.print("[green]✅ 仓库部署完成，可继续执行：[/green]")
-        console.print("  • 菜单 5：上传本地素材到远端输入目录。")
-        console.print("  • 菜单 6：在 tmux 中后台运行 asr_quickstart.py。")
+        console.print("  • 菜单 8：上传本地素材到远端输入目录。")
+        console.print("  • 菜单 7：在 tmux 中后台运行 asr_quickstart.py。")
     else:
         console.print("[red]❌ 部署或入口检查未通过，请检查上述输出并重试。[/red]")
         console.print("[yellow]常见问题：确认 SSH 凭据、仓库分支与入口文件路径是否正确；如提示 python3 缺失，请先运行菜单 9 进行环境部署。[/yellow]")
@@ -702,7 +702,7 @@ def handle_upload_materials(config: Dict) -> None:
         console.print(f"[red]上传失败：{exc}[/red]")
         return
     # 上传成功后给出下一步建议与远端统计命令。
-    console.print("[green]✅ 上传完成，可继续执行菜单 6 启动 ASR。[/green]")
+    console.print("[green]✅ 上传完成，可继续执行菜单 7 启动 ASR。[/green]")
     ssh_hint = "ssh"
     if ssh_key_path:
         ssh_hint += f" -i {shlex.quote(ssh_key_path)}"
@@ -753,7 +753,7 @@ def handle_run_asr_tmux(config: Dict) -> None:
         return
     # 根据返回码输出提示。
     if result_code == 0:
-        console.print("[green]✅ 已启动 ASR 任务，请继续使用菜单 7 查看实时日志。[/green]")
+        console.print("[green]✅ 已启动 ASR 任务，请继续使用菜单 9 查看实时日志。[/green]")
     else:
         console.print(f"[red]❌ ASR 任务启动失败，返回码 {result_code}。请检查上述输出。[/red]")
 

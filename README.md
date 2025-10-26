@@ -148,7 +148,7 @@ VULTRagent/
 运行该菜单后，终端会汇总执行的动作，并提示后续可重新上传素材或直接退出。
 
 ## 一键远端环境部署/检查
-菜单项 **10. 一键环境部署/检查** 会自动执行以下流程：
+菜单项 **5. 一键环境部署/检查（远端）** 会自动执行以下流程：
 
 1. 将本地 `scripts/bootstrap_remote.sh` 上传到远端 `/tmp/vultragentsvc_bootstrap.sh`（路径可在 `remote.bootstrap_tmp_path` 中自定义）。
 2. 通过 `ssh` 注入配置中的远端目录、日志路径、Hugging Face 选项等环境变量。
@@ -169,15 +169,15 @@ STATUS:NETWORK:FAIL:网络检测失败
 STATUS:OVERALL:FAIL:环境部署与检查完成
 ```
 
-`print_health_report` 会对上述状态进行解析并以彩色表格展示，清晰标记 ✅/❌。若某一步骤失败，可根据提示在远端手动排查后再次执行菜单 10，脚本会在已有基础上补齐缺失依赖。
+`print_health_report` 会对上述状态进行解析并以彩色表格展示，清晰标记 ✅/❌。若某一步骤失败，可根据提示在远端手动排查后再次执行菜单 5，脚本会在已有基础上补齐缺失依赖。
 
 ## 远端仓库部署（Round 4）
 
-菜单项 **11. 部署/更新 ASR 仓库到远端** 现已接入真实逻辑，推荐流程如下：
+菜单项 **6. 部署/更新 ASR 仓库到远端** 现已接入真实逻辑，推荐流程如下：
 
 - **前置条件**：
   - 已通过菜单 2 选择目标实例，`.state.json` 中包含 `ip` 等字段；
-  - 已执行菜单 10 或确认远端已安装 `git`、`git-lfs`、`python3` 等依赖；
+  - 已执行菜单 5 或确认远端已安装 `git`、`git-lfs`、`python3` 等依赖；
   - 本地可通过 `ssh user@host`（Windows 建议使用 WSL 或安装 OpenSSH 客户端）。
 - **关键配置项**（位于 `config.yaml`）：
   - `git.repo_url`：支持 SSH（推荐部署密钥）或 HTTPS；
@@ -187,9 +187,9 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
   - 使用 SSH 克隆时建议为目标仓库配置只读 Deploy Key；
   - 使用 HTTPS 克隆时需确保远端已配置 `git-credential`（可与 Hugging Face 的 `--add-to-git-credential` 说明相同处理）；
   - 若仓库包含子模块，确保主仓库与子模块均可访问；
-  - 安装 `git-lfs` 后记得执行 `git lfs install`（菜单 10 会自动处理），否则大文件无法同步。
+  - 安装 `git-lfs` 后记得执行 `git lfs install`（菜单 5 会自动处理），否则大文件无法同步。
 
-运行菜单 11 后，终端会按照 `[1/6] ensure project_dir` → `[6/6] summarize repository` 的顺序输出步骤，并实时转发远端 `git` 日志。示例输出：
+运行菜单 6 后，终端会按照 `[1/6] ensure project_dir` → `[6/6] summarize repository` 的顺序输出步骤，并实时转发远端 `git` 日志。示例输出：
 
 ```
 [1/6] ensure project_dir
@@ -210,25 +210,25 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
 Deployed branch=main commit=a1b2c3d entry=OK
 ```
 
-若部署成功且入口脚本通过 `python3 -m py_compile` 校验，界面会提示接下来可执行的菜单 5（上传素材）与菜单 6（tmux 后台运行）。
+若部署成功且入口脚本通过 `python3 -m py_compile` 校验，界面会提示接下来可执行的菜单 8（上传素材）与菜单 7（tmux 后台运行）。
 
 **常见问题与排查**：
 
 - `Host key verification failed`：首次连接新主机时请先在本地 `ssh` 一次或使用 `ssh-keyscan` 添加指纹；
 - `Permission denied (publickey)`：确认 `ssh.user`、`ssh.keyfile` 与远端授权匹配，并保证 Windows/WSL 下的密钥权限正确；
 - `fatal: Remote branch <name> not found`：确认 `git.branch` 与仓库实际分支一致；
-- `git lfs pull failed` 或 `git-lfs: command not found`：请重新执行菜单 10 或在远端运行 `git lfs install` 后再次尝试部署。
+- `git lfs pull failed` 或 `git-lfs: command not found`：请重新执行菜单 5 或在远端运行 `git lfs install` 后再次尝试部署。
 
 ## 上传素材与运行 ASR（Round 5）
 
 ### 前置条件
 
 - 已执行菜单 2 选择目标实例，`.state.json` 中包含 `ip` 等字段；
-- 已通过菜单 11 部署/更新 ASR 仓库，确认入口脚本存在且可编译；
-- 已运行菜单 10（或手动完成环境部署），确保远端安装了 `tmux`、`rsync`（可选）与 Python 运行环境；
+- 已通过菜单 6 部署/更新 ASR 仓库，确认入口脚本存在且可编译；
+- 已运行菜单 5（或手动完成环境部署），确保远端安装了 `tmux`、`rsync`（可选）与 Python 运行环境；
 - `config.yaml` 中补全 `ssh`、`remote`、`transfer`、`asr` 与 `huggingface` 配置。
 
-### 菜单 5：上传本地素材到远端输入目录
+### 菜单 8：上传本地素材到远端输入目录
 
 1. 默认会将 `transfer.upload_local_dir`（示例为 `./materials`）下的全部文件与子目录同步到远端 `remote.inputs_dir`。若目录不存在，程序会自动创建。
 2. 优先调用 `rsync -avz --progress`，可增量同步并展示进度；若本地缺少 `rsync`，则自动降级为 `scp -r`，速度较慢且无法增量，请在 README 的“常见问题”中了解差异。
@@ -241,7 +241,7 @@ Deployed branch=main commit=a1b2c3d entry=OK
    ```
    该命令可在远端统计素材数量，验证是否传输完整。
 
-### 菜单 6：在 tmux 中后台运行 ASR
+### 菜单 7：在 tmux 中后台运行 ASR
 
 - 程序会根据 `config.yaml` 拼装非交互命令，参数映射如下：
 
@@ -263,7 +263,7 @@ Deployed branch=main commit=a1b2c3d entry=OK
     --models-dir "/home/ubuntu/.cache/asrprogram/models" \
     --model "large-v3"
   ```
-- 典型日志片段（通过菜单 7 观察）：
+- 典型日志片段（通过菜单 9 观察）：
   ```text
   [2024-05-01 12:34:56] Downloading model large-v3...
   [2024-05-01 12:35:10] Loaded model in 14.2s
@@ -277,15 +277,15 @@ Deployed branch=main commit=a1b2c3d entry=OK
   CLI 会在终端打印环境变量摘要，带 `token`/`secret`/`key` 的值会自动打码为 `***`。
 - 启动成功后可通过 `tmux ls` 在远端确认会话存在，日志将写入 `remote.log_file` 并可重复追加。
 
-### 菜单 7：实时日志监控
+### 菜单 9：实时日志监控
 
 - 程序通过 `ssh ... tail -n +1 -f <log_file>` 将远端日志逐行转发到本地，适用于监控模型下载、转录进度等输出；
 - 终端明确提示“按 Ctrl+C 结束”，中断后命令会返回退出码 130 并继续保留 tmux 会话；
-- 查看结束后终端会提示执行菜单 8 回传 ASR 结果，此步骤会按实例标签与时间戳创建本地目录并自动执行重试与清单校验。
+- 查看结束后终端会提示执行菜单 10 回传 ASR 结果，此步骤会按实例标签与时间戳创建本地目录并自动执行重试与清单校验。
 
 ### 常见问题
 
-- `tmux: command not found`：说明远端缺少 tmux，请先执行菜单 10（或手动运行 `scripts/bootstrap_remote.sh`）重新部署环境；
+- `tmux: command not found`：说明远端缺少 tmux，请先执行菜单 5（或手动运行 `scripts/bootstrap_remote.sh`）重新部署环境；
 - `Permission denied`：检查 `ssh.user`、`ssh.keyfile`、远端目录权限及 `chmod`；如使用 WSL/cwRsync，确保密钥权限遵循 OpenSSH 限制；
 - 日志文件为空：确认入口脚本路径正确、命令参数无误；必要时在远端手动执行 README 中的示例命令，或检查 Hugging Face 下载是否因 token 失效而失败；
 - Hugging Face 模式差异：`persist_login=true` 适合长期节点，登录一次即可；`persist_login=false` 更安全，每次注入临时 token。若需撤销令牌，请访问 [Hugging Face Access Tokens](https://huggingface.co/settings/tokens) 删除旧 token 并更新 `config.yaml`。
@@ -294,8 +294,8 @@ Deployed branch=main commit=a1b2c3d entry=OK
 ## Hugging Face 配置与安全
 `config.example.yaml` 中新增的 `huggingface` 段落支持两种工作模式：
 
-- **持久登录（`persist_login: true`）**：菜单 10 会在远端安装 `huggingface_hub[cli]` 并执行 `huggingface-cli login`，可选写入 Git Credential Helper，适合长期运行的部署。登录日志仅在失败时输出。
-- **运行时注入（`persist_login: false`）**：菜单 6 在启动 tmux 任务时临时注入 `HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行结束后不会在远端留下凭据。
+- **持久登录（`persist_login: true`）**：菜单 5 会在远端安装 `huggingface_hub[cli]` 并执行 `huggingface-cli login`，可选写入 Git Credential Helper，适合长期运行的部署。登录日志仅在失败时输出。
+- **运行时注入（`persist_login: false`）**：菜单 7 在启动 tmux 任务时临时注入 `HUGGINGFACE_HUB_TOKEN` 与 `HF_HOME`，执行结束后不会在远端留下凭据。
 
 安全建议：
 
@@ -316,6 +316,6 @@ Deployed branch=main commit=a1b2c3d entry=OK
 - **429 Too Many Requests**：触发 Vultr 限流。程序会自动指数退避重试，若仍失败请稍后再试或减少频繁操作。
 - **请求超时或网络错误**：可能是网络不稳定或 Vultr API 暂时不可用。请检查网络连通性并重试；必要时可在配置中自定义代理或稍后再访问。
 - **Permission denied (publickey)**：远端拒绝 SSH 连接。请确认 config.yaml 中的 `ssh.user` 与 `ssh.keyfile` 设置正确，并确保私钥已添加到 `ssh-agent` 或配置了 `~/.ssh/config`。
-- **git-lfs: command not found**：请重新执行菜单 10 或在远端手动运行 `git lfs install`，以初始化 Git LFS 环境。
-- **tmux: failed to connect to server**：通常是 tmux 尚未安装或缺少权限。运行菜单 10 后会自动安装；若仍失败，可检查 `$HOME/.tmux` 权限并执行 `tmux kill-server`。
-- **ffmpeg/网络检测失败**：远端脚本会标记为 FAIL。请确认系统包源可访问，并检查网络策略（如需代理可在 `.bashrc` 中设置），然后重新运行菜单 10。
+- **git-lfs: command not found**：请重新执行菜单 5 或在远端手动运行 `git lfs install`，以初始化 Git LFS 环境。
+- **tmux: failed to connect to server**：通常是 tmux 尚未安装或缺少权限。运行菜单 5 后会自动安装；若仍失败，可检查 `$HOME/.tmux` 权限并执行 `tmux kill-server`。
+- **ffmpeg/网络检测失败**：远端脚本会标记为 FAIL。请确认系统包源可访问，并检查网络策略（如需代理可在 `.bashrc` 中设置），然后重新运行菜单 5。

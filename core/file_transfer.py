@@ -20,6 +20,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 # 导入 typing 模块中的 Dict、List、Optional 以完善类型注解。
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 # 导入 rich.console.Console 以便在终端呈现彩色输出。
 from rich.console import Console
@@ -47,6 +48,41 @@ def _execute_remote(user: str, host: str, command: str, keyfile: Optional[str]) 
     result = run_ssh_command(host=host, user=user, keyfile=keyfile, command=wrapped)
     # 将执行结果组装成统一的字典格式，便于后续处理。
     return {"returncode": result.returncode, "stdout": result.stdout, "args": result.args}
+
+
+# 定义辅助函数，从仓库地址中解析出 SSH 主机名，便于写入 known_hosts。
+def _extract_repo_host(repo_url: str) -> Optional[str]:
+    if not repo_url:
+        return None
+    # 处理常见的 git@host:path 形式。
+    if repo_url.startswith("git@"):
+        host_part = repo_url.split("@", 1)[1]
+        return host_part.split(":", 1)[0]
+    # 处理 ssh:// 或 git+ssh:// 协议。
+    parsed = urlparse(repo_url)
+    if parsed.scheme in {"ssh", "git+ssh"}:
+        return parsed.hostname
+    # 对于 https/http 仓库不需要写入 known_hosts。
+    return None
+
+
+# 定义辅助函数，确保远端 known_hosts 中存在目标仓库的 SSH 指纹。
+def _ensure_known_host(
+    user: str,
+    host: str,
+    repo_host: str,
+    keyfile: Optional[str],
+) -> bool:
+    if not repo_host:
+        return True
+    command = (
+        "set -euo pipefail; "
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh; "
+        f"if ssh-keygen -F {_quote(repo_host)} >/dev/null 2>&1; then exit 0; fi; "
+        f"ssh-keyscan -H {_quote(repo_host)} >> ~/.ssh/known_hosts"
+    )
+    result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
+    return result["returncode"] == 0
 
 
 # 定义一个辅助函数，用于在步骤开始前输出提示。
@@ -616,6 +652,14 @@ def deploy_repo(
         messages.append("project_dir 解析失败")
         # 返回失败 payload。
         return result_payload
+    # 在执行 Git 操作前，确保远端已信任仓库所在的 SSH 主机。
+    repo_host = _extract_repo_host(repo_url)
+    if repo_host:
+        console.print(f"[cyan][file_transfer] 确保远端已信任 {repo_host} SSH 指纹。[/cyan]")
+        if not _ensure_known_host(user=user, host=host, repo_host=repo_host, keyfile=keyfile):
+            warning = f"无法将 {repo_host} 写入 known_hosts，后续 git 操作可能因主机指纹校验失败。"
+            console.print(f"[yellow][file_transfer] {warning}[/yellow]")
+            messages.append(warning)
     # 定义步骤总数以供进度输出。
     total_steps = 6
     # 第一步：创建项目目录并检测是否已存在 Git 仓库。
