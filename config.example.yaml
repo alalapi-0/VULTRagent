@@ -1,0 +1,31 @@
+vultr:
+  api_base: "https://api.vultr.com/v2"
+
+ssh:
+  user: "ubuntu"
+  keyfile: ""    # 留空表示使用 ssh-agent
+
+remote:
+  base_dir: "/home/ubuntu/vultragentsvc"
+  project_dir: "/home/ubuntu/asr_program"
+  inputs_dir: "/home/ubuntu/asr_inputs"
+  outputs_dir: "/home/ubuntu/asr_outputs"
+  models_dir: "/home/ubuntu/.cache/asrprogram/models"
+  log_file: "/home/ubuntu/vultragentsvc/run.log"
+  tmux_session: "vultragentsvc"
+
+git:
+  repo_url: "git@github.com:yourname/your-asr-repo.git"
+  branch: "main"
+
+asr:
+  entry: "asr_quickstart.py"
+  args:
+    input_dir: "/home/ubuntu/asr_inputs"
+    output_dir: "/home/ubuntu/asr_outputs"
+    models_dir: "/home/ubuntu/.cache/asrprogram/models"
+    model: "large-v3"
+    extra: []
+
+transfer:
+  download_glob: "*.json"
