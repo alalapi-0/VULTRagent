@@ -163,13 +163,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point used by ``python asr_quickstart.py``."""
 
     argv = list(argv or sys.argv[1:])
-    # ``typer`` treats ``python script.py`` as calling the default command.  To
-    # keep the CLI explicit we redirect to the ``run`` command when the user does
-    # not specify one.
-    if not argv or argv[0].startswith("-"):
-        argv = ["run", *argv]
+    # ``typer`` treats ``python script.py`` as calling the default command.  The
+    # original implementation attempted to inject a ``run`` subcommand manually,
+    # which broke invocation via ``python asr_quickstart.py``.  We now simply
+    # allow Typer to process the arguments directly while gracefully ignoring an
+    # explicit ``run`` prefix for backwards compatibility.
+    if argv[:1] == ["run"]:
+        argv = argv[1:]
     try:
-        app(argv)
+        app(args=argv, standalone_mode=False)
     except typer.Exit as exc:  # Typer raises typer.Exit for normal termination.
         return exc.exit_code
     return 0
