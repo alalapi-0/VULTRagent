@@ -15,6 +15,12 @@ DEFAULT_TIMEOUT = (5, 30)
 MAX_RETRIES = 3
 
 
+def _build_url(api_base: str, path: str) -> str:
+    """Join ``api_base`` and ``path`` ensuring there is exactly one slash between them."""
+
+    return f"{api_base.rstrip('/')}/{path.lstrip('/')}"
+
+
 # 定义一个内部帮助函数负责带重试的 HTTP 请求。
 def _perform_request(method: str, url: str, headers: Dict[str, str], params: Dict[str, str] | None = None) -> requests.Response:
     # 使用 for 循环在允许的重试次数内尝试发送请求。
@@ -62,7 +68,7 @@ def list_instances(api_base: str) -> List[Dict]:
         "Content-Type": "application/json",
     }
     # 构造实例列表接口的 URL。
-    url = f"{api_base}/v2/instances"
+    url = _build_url(api_base, "instances")
     # 初始化列表用于保存所有实例信息。
     instances: List[Dict] = []
     # 初始化 cursor 为 None，表示从第一页开始。
@@ -123,7 +129,7 @@ def get_instance_info(api_base: str, instance_id: str) -> Dict:
         "Content-Type": "application/json",
     }
     # 构造实例详情接口的 URL。
-    url = f"{api_base}/v2/instances/{instance_id}"
+    url = _build_url(api_base, f"instances/{instance_id}")
     # 调用内部请求函数获取实例详情。
     response = _perform_request("GET", url, headers)
     # 如果响应状态码不是 200，则抛出异常。
