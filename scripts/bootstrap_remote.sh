@@ -106,19 +106,31 @@ HF_LOGIN_MESSAGE="未开启持久化登录或缺少 token"
 if [ "${PERSIST_HF_LOGIN,,}" = "true" ] && [ -n "$HF_TOKEN_FROM_AGENT" ]; then
   # 安装 huggingface_hub[cli] 以获得 huggingface-cli 命令。
   python3 -m pip install --upgrade --quiet "huggingface_hub[cli]" || true
-  # 根据配置决定是否添加到 git credential。
-  HF_LOGIN_FLAGS="--yes"
-  if [ "${SET_HF_GIT_CREDENTIAL,,}" = "true" ]; then
-    HF_LOGIN_FLAGS="--add-to-git-credential ${HF_LOGIN_FLAGS}"
-  fi
-  # 尝试使用提供的 token 进行登录，并捕获成功或失败信息。
-  if huggingface-cli login --token "$HF_TOKEN_FROM_AGENT" $HF_LOGIN_FLAGS >/tmp/hf_login.log 2>&1; then
-    HF_LOGIN_STATUS="OK"
-    HF_LOGIN_MESSAGE="CLI 登录成功"
+  # 根据可用命令选择兼容的新旧 CLI 调用方式。
+  if command -v hf >/dev/null 2>&1; then
+    HF_LOGIN_CMD=(hf auth login)
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_LOGIN_CMD=(huggingface-cli login)
   else
     HF_LOGIN_STATUS="FAIL"
-    HF_LOGIN_MESSAGE="CLI 登录失败，请检查 token"
+    HF_LOGIN_MESSAGE="未找到 Hugging Face CLI"
     OVERALL_STATUS="FAIL"
+  fi
+  # 拼接登录命令及可选参数（避免使用已弃用的 --yes 标志）。
+  if [ "$HF_LOGIN_STATUS" != "FAIL" ]; then
+    HF_LOGIN_CMD+=(--token "$HF_TOKEN_FROM_AGENT")
+    if [ "${SET_HF_GIT_CREDENTIAL,,}" = "true" ]; then
+      HF_LOGIN_CMD+=(--add-to-git-credential)
+    fi
+    # 尝试使用提供的 token 进行登录，并捕获成功或失败信息。
+    if "${HF_LOGIN_CMD[@]}" >/tmp/hf_login.log 2>&1; then
+      HF_LOGIN_STATUS="OK"
+      HF_LOGIN_MESSAGE="CLI 登录成功"
+    else
+      HF_LOGIN_STATUS="FAIL"
+      HF_LOGIN_MESSAGE="CLI 登录失败，请检查 token"
+      OVERALL_STATUS="FAIL"
+    fi
   fi
   # 输出 CLI 登录日志内容以便调试（安全起见仅在失败时打印）。
   if [ "$HF_LOGIN_STATUS" = "FAIL" ]; then
@@ -140,7 +152,7 @@ log_status "HF_LOGIN" "$HF_LOGIN_STATUS" "$HF_LOGIN_MESSAGE"
 
 # 依次执行健康检查命令，并记录结果到状态列表中。
 PYTHON_VERSION_OUTPUT="$(python3 --version 2>&1)" || PYTHON_VERSION_OUTPUT="python3 不可用"
-if [[ "$PYTHON_VERSION_OUTPUT" == python3* ]]; then
+if [[ "${PYTHON_VERSION_OUTPUT,,}" == python* ]]; then
   log_status "PYTHON" "OK" "$PYTHON_VERSION_OUTPUT"
 else
   log_status "PYTHON" "FAIL" "$PYTHON_VERSION_OUTPUT"
