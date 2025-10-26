@@ -49,12 +49,17 @@ def _extract_hf_config(config: Dict) -> Dict[str, str]:
     # 读取 huggingface 配置段，若不存在则回退为空字典。
     hf_conf = config.get("huggingface", {}) if config else {}
     # 组装需要传递给远端脚本的环境变量。
-    return {
+    token_value = hf_conf.get("token", "")
+    env_payload = {
         "PERSIST_HF_LOGIN": "true" if hf_conf.get("persist_login", False) else "false",
-        "HF_TOKEN_FROM_AGENT": hf_conf.get("token", ""),
+        "HF_TOKEN_FROM_AGENT": token_value,
         "HF_HOME": hf_conf.get("hf_home", ""),
         "SET_HF_GIT_CREDENTIAL": "true" if hf_conf.get("set_git_credential", True) else "false",
     }
+    # 如果配置中提供了 Hugging Face token，则确保在环境变量中显式暴露 HF_TOKEN。
+    if token_value:
+        env_payload.setdefault("HF_TOKEN", token_value)
+    return env_payload
 
 # 定义一个辅助函数，用于将环境变量字典转换为安全的字符串键值。
 def _sanitize_env_values(env: Dict[str, str]) -> Dict[str, str]:
@@ -75,6 +80,8 @@ def _mask_sensitive(env: Dict[str, str]) -> Dict[str, str]:
     # 如果包含 HF token，则仅保留长度信息。
     if masked.get("HF_TOKEN_FROM_AGENT"):
         masked["HF_TOKEN_FROM_AGENT"] = "***MASKED***"
+    if masked.get("HF_TOKEN"):
+        masked["HF_TOKEN"] = "***MASKED***"
     # 返回处理后的字典。
     return masked
 
