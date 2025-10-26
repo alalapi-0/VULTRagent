@@ -29,7 +29,7 @@ from core.vultr_api import get_instance_info, list_instances
 # 从 core.remote_exec 模块导入占位函数。
 from core.remote_exec import run_ssh_command, start_remote_job_in_tmux, tail_remote_log
 # 从 core.file_transfer 模块导入占位函数。
-from core.file_transfer import upload_local_to_remote, fetch_results_from_remote, deploy_repo
+from core.file_transfer import upload_local_to_remote, fetch_results_from_remote, deploy_repo, verify_entry, print_deploy_summary
 # 从 core.remote_bootstrap 模块导入远端部署与报告函数。
 from core.remote_bootstrap import upload_and_bootstrap, print_health_report
 # 从 core.asr_runner 模块导入占位函数。
@@ -353,8 +353,110 @@ def handle_remote_bootstrap(config: Dict) -> None:
 
 # 定义部署 ASR 仓库的函数。
 def handle_deploy_repo(config: Dict) -> None:
-    # 调用 deploy_repo 占位函数。
-    deploy_repo(config)
+    # 在执行部署前尝试读取状态文件，确保已经选择实例。
+    try:
+        # 尝试解析 .state.json 获取目标实例信息。
+        state = load_state()
+    except FileNotFoundError:
+        # 当状态文件不存在时提示用户先执行菜单 2。
+        console.print("[red]尚未选择实例，请先使用菜单 2 保存目标实例。[/red]")
+        return
+    except json.JSONDecodeError:
+        # 当状态文件内容损坏时提示用户重新选择实例。
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+    # 从状态中获取远端 IP 地址。
+    ip_address = state.get("ip", "")
+    # 如果缺少 IP 信息则无法继续部署。
+    if not ip_address:
+        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        return
+    # 读取 SSH 配置段，用于构造远端登录凭据。
+    ssh_conf = config.get("ssh", {}) if config else {}
+    # 获取远端用户名。
+    ssh_user = ssh_conf.get("user", "")
+    # 若用户名缺失则提醒用户补全配置。
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请先更新 config.yaml。[/red]")
+        return
+    # 解析私钥路径，允许使用默认 ssh-agent。
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+    # 读取 Git 配置以获取仓库地址与分支。
+    git_conf = config.get("git", {}) if config else {}
+    repo_url = git_conf.get("repo_url", "")
+    branch = git_conf.get("branch", "")
+    # 校验仓库地址是否配置。
+    if not repo_url:
+        console.print("[red]配置文件缺少 git.repo_url，无法执行部署。[/red]")
+        return
+    # 校验分支是否配置。
+    if not branch:
+        console.print("[red]配置文件缺少 git.branch，无法执行部署。[/red]")
+        return
+    # 读取远端项目目录。
+    remote_conf = config.get("remote", {}) if config else {}
+    project_dir = remote_conf.get("project_dir", "")
+    if not project_dir:
+        console.print("[red]配置文件缺少 remote.project_dir，无法执行部署。[/red]")
+        return
+    # 解析入口脚本名称，默认使用 asr_quickstart.py。
+    entry_name = config.get("asr", {}).get("entry", "asr_quickstart.py")
+    # 在终端输出部署起始提示。
+    console.print(f"[blue]即将部署仓库到 {ip_address}:{project_dir}，分支 {branch}。[/blue]")
+    try:
+        # 调用核心函数执行远端仓库部署。
+        deploy_info = deploy_repo(
+            user=ssh_user,
+            host=ip_address,
+            repo_url=repo_url,
+            branch=branch,
+            project_dir=project_dir,
+            keyfile=ssh_key_path or None,
+        )
+    except OSError as exc:
+        # 捕获本地执行 ssh/git 命令时的系统错误。
+        console.print(f"[red]执行远端部署时出现系统错误：{exc}[/red]")
+        return
+    # 根据部署结果决定是否继续校验入口文件。
+    if deploy_info.get("ok"):
+        try:
+            # 仓库部署成功后验证入口脚本。
+            verify_info = verify_entry(
+                user=ssh_user,
+                host=ip_address,
+                project_dir=project_dir,
+                entry_name=entry_name or "asr_quickstart.py",
+                keyfile=ssh_key_path or None,
+            )
+        except OSError as exc:
+            # 捕获执行验证时可能出现的 ssh 错误。
+            console.print(f"[red]入口检查失败：{exc}[/red]")
+            verify_info = {
+                "exists": False,
+                "py_compiles": False,
+                "path": f"{project_dir.rstrip('/')}/{entry_name}",
+                "messages": ["入口校验时发生 ssh 错误。"],
+            }
+    else:
+        # 若部署失败则构造占位的入口检查结果。
+        verify_info = {
+            "exists": False,
+            "py_compiles": False,
+            "path": f"{project_dir.rstrip('/')}/{entry_name}",
+            "messages": ["仓库部署未完成，未执行入口检查。"],
+        }
+    # 打印部署摘要信息，包含分支、提交与入口校验结果。
+    print_deploy_summary(deploy_info, verify_info)
+    # 根据综合状态给出下一步建议。
+    entry_ok = bool(verify_info.get("exists")) and bool(verify_info.get("py_compiles"))
+    if deploy_info.get("ok") and entry_ok:
+        console.print("[green]✅ 仓库部署完成，可继续执行：[/green]")
+        console.print("  • 菜单 7：上传本地素材到远端输入目录。")
+        console.print("  • 菜单 8：在 tmux 中后台运行 asr_quickstart.py。")
+    else:
+        console.print("[red]❌ 部署或入口检查未通过，请检查上述输出并重试。[/red]")
+        console.print("[yellow]常见问题：确认 SSH 凭据、仓库分支与入口文件路径是否正确；如提示 python3 缺失，请先运行菜单 5 进行环境部署。[/yellow]")
 
 # 定义上传素材到远端的函数。
 def handle_upload_materials(config: Dict) -> None:

@@ -1,6 +1,6 @@
 # VULTRagent
 
-> **新增内容（Round 3）**：实现一键远端环境部署脚本、健康检查报告与 Hugging Face 持久登录配置，并完善常见问题。
+> **新增内容（Round 4）**：新增远端仓库部署/更新流程（支持 git-lfs、子模块、入口校验），并保留 Round 3 的一键环境部署与健康检查能力。
 
 ## 项目简介与目标
 VULTRagent 旨在通过本地命令行工具自动化管理 Vultr VPS，主要用于远程部署与执行语音识别（ASR）任务。本轮构建了基础代码骨架，后续将逐步完善实际功能。
@@ -12,7 +12,7 @@ VULTRagent 旨在通过本地命令行工具自动化管理 Vultr VPS，主要�
 3. 查看当前实例详情（实时请求 API）
 4. 连接并测试 SSH（占位）
 5. 一键环境部署/检查（远端脚本，包含健康检查与 Hugging Face 可选登录）
-6. 部署/更新 ASR 仓库到远端（占位）
+6. 部署/更新 ASR 仓库到远端（支持 clone/pull、子模块、git-lfs、入口检查）
 7. 上传本地素材到远端输入目录（占位）
 8. 在 tmux 中后台运行 `asr_quickstart.py`（占位）
 9. 实时查看远端日志（占位）
@@ -133,6 +133,54 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
 
 `print_health_report` 会对上述状态进行解析并以彩色表格展示，清晰标记 ✅/❌。若某一步骤失败，可根据提示在远端手动排查后再次执行菜单 5，脚本会在已有基础上补齐缺失依赖。
 
+## 远端仓库部署（Round 4）
+
+菜单项 **6. 部署/更新 ASR 仓库到远端** 现已接入真实逻辑，推荐流程如下：
+
+- **前置条件**：
+  - 已通过菜单 2 选择目标实例，`.state.json` 中包含 `ip` 等字段；
+  - 已执行菜单 5 或确认远端已安装 `git`、`git-lfs`、`python3` 等依赖；
+  - 本地可通过 `ssh user@host`（Windows 建议使用 WSL 或安装 OpenSSH 客户端）。
+- **关键配置项**（位于 `config.yaml`）：
+  - `git.repo_url`：支持 SSH（推荐部署密钥）或 HTTPS；
+  - `git.branch`：目标分支名，若不存在将提示 `branch not found`；
+  - `remote.project_dir`：远端部署目录，脚本会自动创建并切换至该目录。
+- **兼容性与安全建议**：
+  - 使用 SSH 克隆时建议为目标仓库配置只读 Deploy Key；
+  - 使用 HTTPS 克隆时需确保远端已配置 `git-credential`（可与 Hugging Face 的 `--add-to-git-credential` 说明相同处理）；
+  - 若仓库包含子模块，确保主仓库与子模块均可访问；
+  - 安装 `git-lfs` 后记得执行 `git lfs install`（菜单 5 会自动处理），否则大文件无法同步。
+
+运行菜单 6 后，终端会按照 `[1/6] ensure project_dir` → `[6/6] summarize repository` 的顺序输出步骤，并实时转发远端 `git` 日志。示例输出：
+
+```
+[1/6] ensure project_dir
+[2/6] fetch/pull repository
+...
+[6/6] summarize repository
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ 项目         ┃ 结果           ┃
+┣━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━━┫
+┃ 分支         ┃ main           ┃
+┃ 提交         ┃ a1b2c3d        ┃
+┃ 子模块       ┃ -              ┃
+┃ 浅克隆       ┃ ✅             ┃
+┃ 入口存在     ┃ ✅             ┃
+┃ 入口语法检查 ┃ ✅             ┃
+┃ 入口路径     ┃ /home/ubuntu/asr_program/asr_quickstart.py ┃
+┗━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━┛
+Deployed branch=main commit=a1b2c3d entry=OK
+```
+
+若部署成功且入口脚本通过 `python3 -m py_compile` 校验，界面会提示接下来可执行的菜单 7（上传素材）与菜单 8（tmux 后台运行）。
+
+**常见问题与排查**：
+
+- `Host key verification failed`：首次连接新主机时请先在本地 `ssh` 一次或使用 `ssh-keyscan` 添加指纹；
+- `Permission denied (publickey)`：确认 `ssh.user`、`ssh.keyfile` 与远端授权匹配，并保证 Windows/WSL 下的密钥权限正确；
+- `fatal: Remote branch <name> not found`：确认 `git.branch` 与仓库实际分支一致；
+- `git lfs pull failed` 或 `git-lfs: command not found`：请重新执行菜单 5 或在远端运行 `git lfs install` 后再次尝试部署。
+
 ## Hugging Face 配置与安全
 `config.example.yaml` 中新增的 `huggingface` 段落支持两种工作模式：
 
@@ -148,7 +196,7 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
 ## 下一步开发计划
 - **Round 2**：已实现 Vultr 实例管理与 API 错误处理基础能力。
 - **Round 3**：已实现 `bootstrap_remote.sh`、远端环境健康检查与 Hugging Face 登录集成。
-- **Round 4**：完善 Vultr API 调用与实例管理。
+- **Round 4**：实现远端仓库部署/更新与入口校验。
 - **Round 5**：实现 SSH 执行、文件传输与 tmux 作业管理。
 - **Round 6**：整合 ASR 运行流程，支持实时日志回传。
 - **Round 7**：增加结果回传与清理策略、完成功能测试。
