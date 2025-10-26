@@ -8,6 +8,10 @@ import os
 import sys
 # 导入 time 模块用于测量 API 请求耗时。
 import time
+# 导入 re 模块以便在解析配置时处理 Windows 路径中的反斜杠。
+import re
+# 导入 string 模块用于处理十六进制字符集合。
+import string
 # 导入 subprocess 模块以捕获外部命令异常。
 import subprocess
 # 导入 shlex 模块以在提示命令时进行转义。
@@ -15,7 +19,7 @@ import shlex
 # 导入 pathlib.Path 以便构建跨平台的文件路径。
 from pathlib import Path
 # 导入 typing 模块中的 Callable、Dict 和 List 类型用于类型注解。
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Tuple
 # 导入 requests 库以捕获网络请求异常。
 import requests
 # 导入 typer 库以构建命令行应用。
@@ -70,22 +74,120 @@ LAST_INSTANCE_CACHE: List[Dict] = []
 
 
 # 定义一个函数用于安全读取配置文件。
+def _escape_unknown_backslashes(value: str) -> Tuple[str, bool]:
+    """修正 YAML 双引号字符串中未转义的反斜杠。"""
+
+    result: List[str] = []
+    i = 0
+    changed = False
+    hex_digits = set(string.hexdigits)
+
+    while i < len(value):
+        char = value[i]
+        if char != "\\":
+            result.append(char)
+            i += 1
+            continue
+
+        # 处理合法的 YAML 转义序列，保持原样。
+        if i + 1 < len(value):
+            nxt = value[i + 1]
+            if nxt in {'\\', '"', '/', 'b', 'f', 'n', 'r', 't'}:
+                result.append("\\")
+                result.append(nxt)
+                i += 2
+                continue
+            if nxt == 'x' and i + 3 < len(value) and all(
+                ch in hex_digits for ch in value[i + 2 : i + 4]
+            ):
+                result.append("\\")
+                result.append('x')
+                result.extend(value[i + 2 : i + 4])
+                i += 4
+                continue
+            if nxt == 'u' and i + 5 < len(value) and all(
+                ch in hex_digits for ch in value[i + 2 : i + 6]
+            ):
+                result.append("\\")
+                result.append('u')
+                result.extend(value[i + 2 : i + 6])
+                i += 6
+                continue
+            if nxt == 'U' and i + 9 < len(value) and all(
+                ch in hex_digits for ch in value[i + 2 : i + 10]
+            ):
+                result.append("\\")
+                result.append('U')
+                result.extend(value[i + 2 : i + 10])
+                i += 10
+                continue
+
+        # 其余情况视为普通反斜杠，需要额外转义。
+        result.append("\\\\")
+        if i + 1 < len(value):
+            result.append(value[i + 1])
+            i += 2
+        else:
+            i += 1
+        changed = True
+
+    return "".join(result), changed
+
+
+def _sanitize_windows_paths(yaml_text: str) -> str:
+    """尝试将双引号中的 Windows 路径自动转义。"""
+
+    pattern = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"')
+    changed_any = False
+
+    def repl(match: re.Match) -> str:
+        nonlocal changed_any
+        original_content = match.group(1)
+        corrected, changed = _escape_unknown_backslashes(original_content)
+        if changed:
+            changed_any = True
+            return f'"{corrected}"'
+        return match.group(0)
+
+    sanitized = pattern.sub(repl, yaml_text)
+    return sanitized if changed_any else yaml_text
+
+
+def _load_yaml_file(path: str) -> Dict:
+    """读取 YAML 文件并在必要时自动修正 Windows 路径反斜杠。"""
+
+    with open(path, "r", encoding="utf-8") as handle:
+        yaml_text = handle.read()
+
+    try:
+        return yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError as exc:
+        sanitized = _sanitize_windows_paths(yaml_text)
+        if sanitized != yaml_text:
+            try:
+                data = yaml.safe_load(sanitized) or {}
+            except yaml.YAMLError as inner_exc:
+                raise RuntimeError(
+                    "配置文件包含未转义的反斜杠且自动修正失败，请将 Windows 路径使用单引号或双反斜杠书写。"
+                ) from inner_exc
+            console.print(
+                "[yellow]检测到 config.yaml 中的 Windows 路径缺少转义，已在运行时自动修正。"
+                "建议将路径使用单引号包裹或写成双反斜杠以避免该提示。[/yellow]"
+            )
+            return data
+        raise RuntimeError(
+            "解析配置文件失败，请检查 YAML 语法是否正确。"
+        ) from exc
+
+
 def load_configuration() -> Dict:
     # 该函数尝试读取真实配置文件，否则回退到示例配置。
-    config_data: Dict = {}
-    # 判断 config.yaml 是否存在。
     if os.path.exists(CONFIG_PATH):
-        # 如果存在则读取并解析 YAML 内容。
-        with open(CONFIG_PATH, "r", encoding="utf-8") as config_file:
-            # 使用 yaml.safe_load 将 YAML 内容转换为字典。
-            config_data = yaml.safe_load(config_file) or {}
-    else:
-        # 如果真实配置不存在，则读取示例配置提醒用户。
-        with open(CONFIG_EXAMPLE_PATH, "r", encoding="utf-8") as example_file:
-            config_data = yaml.safe_load(example_file) or {}
-            # 输出提示告知用户当前使用示例配置。
-            console.print("[yellow]未找到 config.yaml，使用示例配置运行占位菜单。[/yellow]")
-    # 返回配置字典。
+        return _load_yaml_file(CONFIG_PATH)
+
+    # 如果真实配置不存在，则读取示例配置提醒用户。
+    config_data = _load_yaml_file(CONFIG_EXAMPLE_PATH)
+    console.print("[yellow]未找到 config.yaml，使用示例配置运行占位菜单。[/yellow]")
     return config_data
 
 # 定义一个函数用于获取 Vultr API Key。
