@@ -8,6 +8,8 @@ import os
 import sys
 # 导入 time 模块用于测量 API 请求耗时。
 import time
+# 导入 subprocess 模块以捕获外部命令异常。
+import subprocess
 # 导入 pathlib.Path 以便构建跨平台的文件路径。
 from pathlib import Path
 # 导入 typing 模块中的 Callable、Dict 和 List 类型用于类型注解。
@@ -28,8 +30,8 @@ from core.vultr_api import get_instance_info, list_instances
 from core.remote_exec import run_ssh_command, start_remote_job_in_tmux, tail_remote_log
 # 从 core.file_transfer 模块导入占位函数。
 from core.file_transfer import upload_local_to_remote, fetch_results_from_remote, deploy_repo
-# 从 core.remote_bootstrap 模块导入占位函数。
-from core.remote_bootstrap import run_bootstrap, check_health
+# 从 core.remote_bootstrap 模块导入远端部署与报告函数。
+from core.remote_bootstrap import upload_and_bootstrap, print_health_report
 # 从 core.asr_runner 模块导入占位函数。
 from core.asr_runner import run_asr_job
 
@@ -289,8 +291,65 @@ def handle_test_ssh(config: Dict) -> None:
 
 # 定义运行远端环境部署的函数。
 def handle_remote_bootstrap(config: Dict) -> None:
-    # 调用 run_bootstrap 占位函数。
-    run_bootstrap(config)
+    # 首先尝试读取状态文件，获取当前选择的实例信息。
+    try:
+        state = load_state()
+    except FileNotFoundError:
+        # 若状态文件不存在，则提醒用户先选择实例。
+        console.print("[red]尚未选择实例，请先使用菜单 2 保存目标实例。[/red]")
+        return
+    except json.JSONDecodeError:
+        # 当状态文件格式损坏时提醒用户重新选择。
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+    # 从状态信息中提取远端 IP 地址。
+    ip_address = state.get("ip", "")
+    # 如果没有 IP 地址则无法继续操作。
+    if not ip_address:
+        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        return
+    # 读取 ssh 配置段，获取用户名与密钥路径。
+    ssh_conf = config.get("ssh", {}) if config else {}
+    # 获取远端登录用户名。
+    ssh_user = ssh_conf.get("user", "")
+    # 如果未配置用户名则提示用户补全配置。
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请先更新 config.yaml。[/red]")
+        return
+    # 解析私钥路径，允许留空以使用默认凭据。
+    ssh_key = ssh_conf.get("keyfile", "")
+    # 如果用户提供了私钥路径，则展开 ~ 以获得绝对路径。
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+    # 构造本地脚本路径并确保其存在。
+    local_script_path = Path(__file__).resolve().parent / "scripts" / "bootstrap_remote.sh"
+    # 设置远端临时脚本路径，可通过配置覆盖，默认位于 /tmp。
+    remote_tmp_path = config.get("remote", {}).get("bootstrap_tmp_path", "/tmp/vultragentsvc_bootstrap.sh")
+    # 在终端提示用户正在执行的操作。
+    console.print(f"[blue]正在将部署脚本上传到 {ip_address} …[/blue]")
+    try:
+        # 调用核心函数上传脚本并执行远端部署流程。
+        report = upload_and_bootstrap(
+            user=ssh_user,
+            host=ip_address,
+            keyfile=ssh_key_path,
+            local_script_path=str(local_script_path),
+            remote_tmp_path=remote_tmp_path,
+            config=config,
+        )
+    except FileNotFoundError as exc:
+        # 当脚本缺失时向用户输出明确的错误提示。
+        console.print(f"[red]远端部署脚本缺失：{exc}[/red]")
+        return
+    except subprocess.CalledProcessError as exc:
+        # 捕获 scp/ssh 运行失败的情况，并展示返回码。
+        console.print(f"[red]远端命令执行失败：{exc}[/red]")
+        return
+    except OSError as exc:
+        # 捕获底层系统错误，例如 ssh 命令不可用等。
+        console.print(f"[red]执行远端部署时出现系统错误：{exc}[/red]")
+        return
+    # 调用打印函数展示远端健康检查报告。
+    print_health_report(report)
 
 # 定义部署 ASR 仓库的函数。
 def handle_deploy_repo(config: Dict) -> None:
@@ -321,8 +380,8 @@ def handle_fetch_results(config: Dict) -> None:
 
 # 定义停止或清理远端任务的函数。
 def handle_cleanup_remote(config: Dict) -> None:
-    # 调用 check_health 占位函数以演示未来的清理流程。
-    check_health(config)
+    # 目前清理功能尚未实现，此处给出占位提示。
+    console.print("[yellow]清理功能将在后续版本中提供。[/yellow]")
 
 # 定义直接运行 ASR 任务的函数。
 def handle_run_asr(config: Dict) -> None:

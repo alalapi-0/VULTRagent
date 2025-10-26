@@ -13,6 +13,7 @@ remote:
   models_dir: "/home/ubuntu/.cache/asrprogram/models"
   log_file: "/home/ubuntu/vultragentsvc/run.log"
   tmux_session: "vultragentsvc"
+  bootstrap_tmp_path: "/tmp/vultragentsvc_bootstrap.sh"  # 上传脚本的临时存放路径
 
 git:
   repo_url: "git@github.com:yourname/your-asr-repo.git"
@@ -29,3 +30,9 @@ asr:
 
 transfer:
   download_glob: "*.json"
+
+huggingface:
+  token: ""              # 运行时从本地 config.yaml 注入，仓库中保持留空
+  persist_login: true     # 是否使用 huggingface-cli 进行持久化登录
+  set_git_credential: true
+  hf_home: "/home/ubuntu/.cache/huggingface"
