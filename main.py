@@ -32,13 +32,16 @@ from rich.table import Table
 import yaml
 # 从 core.vultr_api 模块导入真实的 API 函数。
 from core.vultr_api import get_instance_info, list_instances
-# 从 core.remote_exec 模块导入 SSH、日志与 tmux 管理函数。
+# 从 core.remote_exec 模块导入 SSH、日志与 tmux 管理函数以及 rsync 安装工具。
 from core.remote_exec import (
     run_ssh_command,
     tail_remote_log,
     stop_tmux_session,
     has_tmux_session,
+    install_remote_rsync,
 )
+# 从 core.env_check 模块导入本地 rsync 检测函数。
+from core.env_check import ensure_local_rsync
 # 从 core.file_transfer 模块导入文件传输、结果回传与仓库部署函数。
 from core.file_transfer import (
     upload_local_to_remote,
@@ -1161,6 +1164,31 @@ def menu() -> None:
 
 # 如果脚本作为主程序运行，则根据参数决定如何启动。
 if __name__ == "__main__":
+    # 在程序入口处提示用户进行环境检测。
+    print("\n=== 环境检测阶段 ===")
+    # 调用 ensure_local_rsync 检测本地 rsync 是否可用。
+    if not ensure_local_rsync(interactive=True):
+        # 当本地缺少 rsync 时给出警告提示。
+        print("[WARN] 本地 rsync 未就绪，请确认安装后重启程序。")
+    # 询问用户是否需要检测远端 rsync 状态。
+    try:
+        remote_choice = input("\n是否检测远端 rsync 状态？(y/n): ").strip().lower()
+    except EOFError:
+        remote_choice = "n"
+    if remote_choice == "y":
+        # 获取远端用户名，默认值为 ubuntu。
+        remote_user = input("请输入远端用户名 (默认: ubuntu): ") or "ubuntu"
+        # 获取远端主机地址。
+        remote_host = input("请输入远端 IP 地址: ").strip()
+        # 获取可选的 SSH 私钥路径并将空字符串转换为 None。
+        keyfile_input = input("请输入 SSH 私钥路径 (可留空): ").strip()
+        keyfile_path = keyfile_input or None
+        if not remote_host:
+            # 未提供主机地址时提示用户并跳过安装流程。
+            print("[WARN] 未提供远端 IP，已跳过远端 rsync 检测。")
+        else:
+            # 调用 install_remote_rsync 执行远端检测与安装逻辑。
+            install_remote_rsync(user=remote_user, host=remote_host, keyfile=keyfile_path)
     # 当没有额外命令行参数时直接进入交互式菜单，满足 "python main.py" 启动要求。
     if len(sys.argv) == 1:
         # 直接调用交互式菜单。

@@ -12,6 +12,91 @@ import shlex
 # 导入 typing 模块中的 Dict、Optional、Sequence 类型用于类型注解。
 from typing import Dict, Optional, Sequence
 
+
+def install_remote_rsync(user: str, host: str, keyfile: Optional[str] = None) -> bool:
+    """通过 SSH 检测并在必要时安装远端 rsync。"""
+
+    # 若缺少主机或用户名信息，则无法继续执行。
+    if not host:
+        print("[ERROR] 未提供远端主机地址，无法检测 rsync。")
+        return False
+    if not user:
+        print("[ERROR] 未提供远端用户名，无法检测 rsync。")
+        return False
+
+    # 构建 ssh 基础参数列表，后续命令在此基础上附加远端指令。
+    ssh_args = ["ssh"]
+    # 当提供私钥路径时添加 -i 参数。
+    if keyfile:
+        ssh_args.extend(["-i", keyfile])
+    # 拼接目标主机字符串。
+    ssh_args.append(f"{user}@{host}")
+
+    # 打印检测提示，保持与其它日志格式一致。
+    print("[CHECK] 正在检测远端 rsync ...")
+    # 构造用于检测 rsync 是否存在的命令。
+    check_cmd = ssh_args + ["command", "-v", "rsync"]
+
+    try:
+        # 执行检测命令并捕获结果。
+        check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+    except Exception as exc:
+        # 当 SSH 执行失败时输出错误信息。
+        print(f"[ERROR] 无法连接远端主机或执行检测命令：{exc}")
+        return False
+
+    # 若命令返回码为 0，表示远端已安装 rsync。
+    if check_result.returncode == 0:
+        # 进一步查询远端 rsync 版本并输出。
+        version_cmd = ssh_args + ["rsync", "--version"]
+        try:
+            version_result = subprocess.run(version_cmd, capture_output=True, text=True)
+            version_line = version_result.stdout.splitlines()[0] if version_result.stdout else "rsync"
+        except Exception:
+            version_line = "rsync"
+        print(f"[OK] 远端 rsync 已存在：{version_line}")
+        return True
+
+    # 当远端缺少 rsync 时，提示用户是否执行安装。
+    try:
+        choice = input("远端未检测到 rsync，是否自动安装？(y/n): ").strip().lower()
+    except EOFError:
+        choice = "n"
+
+    if choice != "y":
+        # 用户拒绝安装时给出跳过提示。
+        print("[SKIP] 用户取消安装远端 rsync。")
+        return False
+
+    # 打印安装开始提示。
+    print("[INSTALL] 正在通过 SSH 安装远端 rsync ...")
+    # 构造通过 bash -lc 执行的安装命令字符串。
+    remote_install = "sudo apt-get update -y && sudo apt-get install -y rsync"
+    install_cmd = ssh_args + ["bash", "-lc", remote_install]
+
+    try:
+        # 执行安装命令并在失败时抛出异常。
+        subprocess.run(install_cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        # 捕获命令返回非零状态的情况。
+        print(f"[FAIL] 远端 rsync 安装失败，返回码 {exc.returncode}。")
+        return False
+    except Exception as exc:
+        # 捕获其它潜在异常并反馈。
+        print(f"[ERROR] 执行远端安装命令时出错：{exc}")
+        return False
+
+    # 安装成功后再次检测并输出结果。
+    print("[CHECK] 正在验证远端 rsync 安装结果 ...")
+    verify_cmd = ssh_args + ["rsync", "--version"]
+    try:
+        verify_result = subprocess.run(verify_cmd, capture_output=True, text=True)
+        version_line = verify_result.stdout.splitlines()[0] if verify_result.stdout else "rsync"
+    except Exception:
+        version_line = "rsync"
+    print(f"[OK] 已在远端安装 rsync：{version_line}")
+    return True
+
 # 定义一个辅助函数，用于组装 ssh 目标字符串。
 def _build_target(host: str, user: Optional[str]) -> str:
     # 如果提供了用户名，则拼接成 user@host 形式，否则仅返回主机名。
