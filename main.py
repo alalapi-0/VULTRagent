@@ -28,6 +28,8 @@ import typer
 from rich.console import Console
 # 导入 rich.table 中的 Table 类用于展示菜单。
 from rich.table import Table
+# 导入 rich.box 以选择更规整的菜单边框样式。
+from rich import box
 # 导入 yaml 库以读取配置模板。
 import yaml
 # 从 core.vultr_api 模块导入真实的 API 函数。
@@ -1159,11 +1161,17 @@ MENU_ACTIONS: Dict[str, Dict[str, Callable[[Dict], None]]] = {
 # 定义打印菜单的函数。
 def render_menu() -> None:
     # 创建一个表格用于展示菜单项。
-    table = Table(title="VULTRagent 主菜单")
-    # 添加序号列。
-    table.add_column("序号", style="cyan", justify="center")
-    # 添加操作描述列。
-    table.add_column("操作", style="magenta")
+    table = Table(
+        title="VULTRagent 主菜单",
+        box=box.DOUBLE_EDGE,
+        pad_edge=False,
+        title_style="bold cyan",
+        header_style="bold magenta",
+    )
+    # 添加序号列并固定宽度，保证边框对齐。
+    table.add_column("序号", style="cyan", justify="center", width=4, no_wrap=True)
+    # 添加操作描述列，启用自动换行避免影响边框。
+    table.add_column("操作", style="magenta", overflow="fold")
     # 遍历 MENU_ACTIONS 并将每项加入表格。
     for key, info in MENU_ACTIONS.items():
         table.add_row(key, info["label"])
