@@ -1,9 +1,10 @@
 # core/asr_runner.py
 # 该模块用于封装 ASR 任务执行逻辑，包括命令构建与 tmux 调度。
 # 导入 shlex 模块以便在拼接命令时进行安全转义。
+import re
 import shlex
-# 导入 typing 模块中的 Dict、Optional 类型用于类型注解。
-from typing import Dict, Optional
+# 导入 typing 模块中的 Dict、List、Optional 类型用于类型注解。
+from typing import Dict, List, Optional
 
 # 导入 rich.console.Console 以提供彩色终端输出。
 from rich.console import Console
@@ -18,6 +19,40 @@ console = Console()
 
 
 # 定义辅助函数，用于根据配置生成完整的 ASR 启动命令。
+# 定义辅助函数，用于将 flag_aliases 的值统一转换为字符串列表。
+def _normalize_aliases(raw: object) -> List[str]:
+    """将 ``flag_aliases`` 中的配置统一转换为不为空的参数名列表。"""
+
+    if raw is None:
+        return []
+    # 字符串允许使用空格、逗号或竖线分隔多个候选别名，便于在配置中书写。
+    if isinstance(raw, str):
+        parts = re.split(r"[\s,|]+", raw.strip())
+        return [part for part in parts if part]
+    if isinstance(raw, (list, tuple, set)):
+        result: List[str] = []
+        for item in raw:
+            text = str(item).strip()
+            if text:
+                result.append(text)
+        return result
+    text = str(raw).strip()
+    return [text] if text else []
+
+
+def _choose_alias(param: str, aliases: List[str], entry_path: str) -> str:
+    """根据参数名称和入口脚本挑选最合适的别名。"""
+
+    normalized_entry = entry_path.rsplit("/", 1)[-1]
+    if param == "output_dir":
+        # 绝大多数示例与占位脚本仍然使用 ``--out-dir``，当该别名可用时强制优先。
+        for alias in aliases:
+            if alias == "--out-dir":
+                return alias
+        # 若用户显式提供其它别名且脚本不兼容 ``--out-dir``，退回列表首位。
+    return aliases[0]
+
+
 def build_asr_command(
     python_bin: str,
     project_dir: str,
@@ -30,8 +65,8 @@ def build_asr_command(
     # 构造命令的初始部分，包括 Python 可执行文件与入口脚本。
     # 构建命令的初始部分，引入 stdbuf 以强制 stdout/stderr 行缓冲。
     command_parts = ["stdbuf", "-oL", "-eL", shlex.quote(python_bin or "python3"), shlex.quote(entry_path)]
-    # 定义常见参数与命令行选项的映射表。
-    flag_map = {
+    # 定义常见参数与命令行选项的映射表，并保留一份原始拷贝以便合并回退别名。
+    base_flag_map = {
         "input_dir": ["--input"],
         # ``--out-dir`` 是较早示例脚本使用的参数名称，而新版本占位脚本
         # 同时接受 ``--output`` 与 ``--out-dir``。默认优先使用前者以兼容
@@ -41,32 +76,42 @@ def build_asr_command(
         "model": ["--model"],
     }
 
+    flag_map: Dict[str, List[str]] = {
+        key: list(value) for key, value in base_flag_map.items()
+    }
+
     alias_overrides = args_cfg.get("flag_aliases")
     if isinstance(alias_overrides, dict):
         for key, override in alias_overrides.items():
-            if not override:
+            aliases = _normalize_aliases(override)
+            if not aliases:
                 continue
-            if isinstance(override, (list, tuple, set)):
-                aliases = [str(item).strip() for item in override if str(item).strip()]
-            else:
-                alias = str(override).strip()
-                aliases = [alias] if alias else []
-            if aliases:
-                flag_map[key] = aliases
+            # 始终附加默认别名以便在用户填写单个参数时仍保留回退方案。
+            fallback = [
+                alias
+                for alias in _normalize_aliases(base_flag_map.get(key))
+                if alias not in aliases
+            ]
+            merged = aliases + fallback
+            flag_map[key] = merged
+
+    # 确保 output_dir 至少包含 ``--out-dir``，以兼容旧版脚本。
+    if "output_dir" in flag_map:
+        normalized_aliases = _normalize_aliases(flag_map["output_dir"])
+        if "--out-dir" not in normalized_aliases:
+            normalized_aliases.append("--out-dir")
+        flag_map["output_dir"] = normalized_aliases
 
     # 遍历映射表，将配置中的值转换为命令行参数。
     for key, flag in flag_map.items():
         value = args_cfg.get(key)
         if not value:
             continue
-        if isinstance(flag, (list, tuple, set)):
-            aliases = [str(item).strip() for item in flag if str(item).strip()]
-        else:
-            alias = str(flag).strip()
-            aliases = [alias] if alias else []
+        aliases = _normalize_aliases(flag)
         if not aliases:
             continue
-        command_parts.extend([aliases[0], shlex.quote(str(value))])
+        alias = _choose_alias(key, aliases, entry_path)
+        command_parts.extend([alias, shlex.quote(str(value))])
     # 处理额外参数列表，允许用户自定义更多 CLI 选项。
     extra_args = args_cfg.get("extra", []) or []
     for item in extra_args:

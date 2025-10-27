@@ -28,7 +28,7 @@ asr:
     models_dir: "/home/ubuntu/.cache/asrprogram/models"
     model: "large-v2"
     # flag_aliases:
-    #   output_dir: "--out-dir"   # 如远端脚本使用不同参数名，可在此覆盖默认 `--output`
+    #   output_dir: ["--output", "--out-dir"]  # 可使用列表或以空格/逗号分隔的字符串
     extra: []                 # 追加自定义参数数组，例如 ["--lang", "zh", "--threads", "8"]
   python_bin: "python3"       # 允许切换到虚拟环境中的 python 可执行文件
   non_interactive: true       # 若入口需要交互则改为 false，并在 README 中提示改造方案
