@@ -32,16 +32,38 @@ def build_asr_command(
     command_parts = ["stdbuf", "-oL", "-eL", shlex.quote(python_bin or "python3"), shlex.quote(entry_path)]
     # 定义常见参数与命令行选项的映射表。
     flag_map = {
-        "input_dir": "--input",
-        "output_dir": "--output",
-        "models_dir": "--models-dir",
-        "model": "--model",
+        "input_dir": ["--input"],
+        "output_dir": ["--output"],
+        "models_dir": ["--models-dir"],
+        "model": ["--model"],
     }
+
+    alias_overrides = args_cfg.get("flag_aliases")
+    if isinstance(alias_overrides, dict):
+        for key, override in alias_overrides.items():
+            if not override:
+                continue
+            if isinstance(override, (list, tuple, set)):
+                aliases = [str(item).strip() for item in override if str(item).strip()]
+            else:
+                alias = str(override).strip()
+                aliases = [alias] if alias else []
+            if aliases:
+                flag_map[key] = aliases
+
     # 遍历映射表，将配置中的值转换为命令行参数。
     for key, flag in flag_map.items():
         value = args_cfg.get(key)
-        if value:
-            command_parts.extend([flag, shlex.quote(str(value))])
+        if not value:
+            continue
+        if isinstance(flag, (list, tuple, set)):
+            aliases = [str(item).strip() for item in flag if str(item).strip()]
+        else:
+            alias = str(flag).strip()
+            aliases = [alias] if alias else []
+        if not aliases:
+            continue
+        command_parts.extend([aliases[0], shlex.quote(str(value))])
     # 处理额外参数列表，允许用户自定义更多 CLI 选项。
     extra_args = args_cfg.get("extra", []) or []
     for item in extra_args:
