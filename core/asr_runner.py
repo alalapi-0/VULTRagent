@@ -33,7 +33,10 @@ def build_asr_command(
     # 定义常见参数与命令行选项的映射表。
     flag_map = {
         "input_dir": ["--input"],
-        "output_dir": ["--output"],
+        # ``--out-dir`` 是较早示例脚本使用的参数名称，而新版本占位脚本
+        # 同时接受 ``--output`` 与 ``--out-dir``。默认优先使用前者以兼容
+        # 尚未升级的远端仓库，用户仍可通过 ``flag_aliases`` 覆盖。
+        "output_dir": ["--out-dir", "--output"],
         "models_dir": ["--models-dir"],
         "model": ["--model"],
     }
