@@ -19,6 +19,18 @@ from core.remote_exec import install_remote_rsync
 _CWRSYNC_ZIP_URL = "https://www.itefix.net/dl/cwRsync_6.2.1_x64_free.zip"
 
 
+def _run_commands(commands):
+    """依次执行命令列表，只要有一个失败就返回 False。"""
+
+    for command in commands:
+        try:
+            subprocess.run(command, check=True)
+        except Exception as exc:  # noqa: BLE001 - 需要捕获所有异常以输出原因
+            print(f"[FAIL] 执行 {' '.join(command)} 失败：{exc}")
+            return False
+    return True
+
+
 def _find_rsync_in_directory(base_dir: Path) -> Path:
     """在指定目录下递归查找 rsync.exe。"""
 
@@ -95,6 +107,100 @@ def _ensure_windows_rsync_via_cmd() -> bool:
     return False
 
 
+def _install_windows_rsync_via_package_managers() -> bool:
+    """尝试使用已安装的包管理器在 Windows 上安装 rsync。"""
+
+    installers = [
+        (
+            "Chocolatey",
+            "choco",
+            [["choco", "install", "-y", "rsync"]],
+        ),
+        (
+            "Scoop",
+            "scoop",
+            [["scoop", "install", "rsync"]],
+        ),
+        (
+            "Winget",
+            "winget",
+            [["winget", "install", "-e", "--id", "cwRsync.cwRsync"]],
+        ),
+    ]
+
+    for name, executable, commands in installers:
+        if not shutil.which(executable):
+            continue
+        print(f"[INFO] 检测到 {name}，尝试安装 rsync …")
+        if not _run_commands(commands):
+            continue
+        if shutil.which("rsync"):
+            print(f"[OK] 已通过 {name} 安装 rsync。")
+            return True
+        print(f"[WARN] 使用 {name} 安装后仍未在 PATH 中找到 rsync。")
+    return False
+
+
+def _install_unix_rsync_automatically() -> bool:
+    """在类 Unix 平台上尽力通过包管理器安装 rsync。"""
+
+    manager_commands = [
+        (
+            "apt",
+            "apt",
+            [
+                ["sudo", "apt", "update", "-y"],
+                ["sudo", "apt", "install", "-y", "rsync"],
+            ],
+        ),
+        (
+            "apt-get",
+            "apt-get",
+            [
+                ["sudo", "apt-get", "update", "-y"],
+                ["sudo", "apt-get", "install", "-y", "rsync"],
+            ],
+        ),
+        (
+            "yum",
+            "yum",
+            [["sudo", "yum", "install", "-y", "rsync"]],
+        ),
+        (
+            "dnf",
+            "dnf",
+            [["sudo", "dnf", "install", "-y", "rsync"]],
+        ),
+        (
+            "pacman",
+            "pacman",
+            [["sudo", "pacman", "-Sy", "--noconfirm", "rsync"]],
+        ),
+        (
+            "apk",
+            "apk",
+            [["sudo", "apk", "add", "rsync"]],
+        ),
+        (
+            "brew",
+            "brew",
+            [["brew", "install", "rsync"]],
+        ),
+    ]
+
+    for name, executable, commands in manager_commands:
+        if not shutil.which(executable):
+            continue
+        print(f"[INFO] 检测到包管理器 {name}，尝试安装 rsync …")
+        if not _run_commands(commands):
+            continue
+        if shutil.which("rsync"):
+            print(f"[OK] 已通过 {name} 安装 rsync。")
+            return True
+        print(f"[WARN] 使用 {name} 安装后仍未在 PATH 中找到 rsync。")
+    return False
+
+
 def ensure_local_rsync(interactive: bool = True) -> bool:
     """检测本地 rsync 是否可用并在必要时引导安装。
 
@@ -129,12 +235,18 @@ def ensure_local_rsync(interactive: bool = True) -> bool:
         # Windows 环境下尝试通过 cmd 自动下载 cwRsync。
         if _ensure_windows_rsync_via_cmd():
             return True
+        # 如果下载 cwRsync 失败，则尝试使用常见包管理器安装。
+        if _install_windows_rsync_via_package_managers():
+            return True
         print("请根据系统类型安装 rsync：")
         print("  - 备用方案 1: 安装 Git for Windows 并在 Git Bash 中使用 rsync；")
         print("  - 备用方案 2: 安装 WSL (Ubuntu)，并运行: sudo apt install -y rsync")
         return False
 
-    # 针对非 Windows 平台输出安装指引。
+    # 针对非 Windows 平台自动尝试使用包管理器安装。
+    if _install_unix_rsync_automatically():
+        return True
+
     print("请根据系统类型安装 rsync：")
     if "darwin" in system_name:
         # 针对 macOS 给出 Homebrew 安装方式。
@@ -143,27 +255,8 @@ def ensure_local_rsync(interactive: bool = True) -> bool:
         # 默认提示 Linux 用户通过 apt 安装。
         print("  - Linux: 运行 → sudo apt update && sudo apt install -y rsync")
 
-    # 当允许交互且系统非 Windows 时，提供自动安装选项。
     if interactive:
-        try:
-            # 询问用户是否需要自动安装。
-            choice = input("\n是否自动为本地安装 rsync？(y/n): ").strip().lower()
-        except EOFError:
-            # 当输入不可用时视为取消安装。
-            choice = "n"
-        if choice == "y":
-            try:
-                # 运行 sudo apt update 刷新软件源。
-                subprocess.run(["sudo", "apt", "update", "-y"], check=True)
-                # 安装 rsync 软件包。
-                subprocess.run(["sudo", "apt", "install", "-y", "rsync"], check=True)
-                # 安装成功后提示用户。
-                print("[OK] 已成功安装 rsync。")
-                return True
-            except Exception as exc:
-                # 捕获安装过程中出现的异常并提示失败原因。
-                print(f"[FAIL] 自动安装失败：{exc}")
-    # 未能成功安装时返回 False。
+        print("[WARN] 自动安装未成功，请手动执行上述命令后重启程序。")
     return False
 
 

@@ -27,6 +27,103 @@ import shlex
 from typing import Dict, Optional, Sequence
 
 
+def _remote_command_available(ssh_args: Sequence[str], command: str) -> bool:
+    """检测远端是否存在指定命令。"""
+
+    check_cmd = list(ssh_args) + ["command", "-v", command]
+    try:
+        result = subprocess.run(check_cmd, capture_output=True, text=True)
+    except Exception as exc:  # noqa: BLE001 - 捕获所有异常用于输出日志
+        print(f"[ERROR] 检测远端命令 {command} 时失败：{exc}")
+        return False
+    return result.returncode == 0
+
+
+def _attempt_remote_install(ssh_args: Sequence[str]) -> bool:
+    """尝试使用常见包管理器在远端安装 rsync。"""
+
+    install_sequences = [
+        (
+            "apt",
+            [
+                "bash",
+                "-lc",
+                "sudo apt update -y && sudo apt install -y rsync",
+            ],
+        ),
+        (
+            "apt-get",
+            [
+                "bash",
+                "-lc",
+                "sudo apt-get update -y && sudo apt-get install -y rsync",
+            ],
+        ),
+        (
+            "yum",
+            [
+                "bash",
+                "-lc",
+                "sudo yum install -y rsync",
+            ],
+        ),
+        (
+            "dnf",
+            [
+                "bash",
+                "-lc",
+                "sudo dnf install -y rsync",
+            ],
+        ),
+        (
+            "pacman",
+            [
+                "bash",
+                "-lc",
+                "sudo pacman -Sy --noconfirm rsync",
+            ],
+        ),
+        (
+            "apk",
+            [
+                "bash",
+                "-lc",
+                "sudo apk add rsync",
+            ],
+        ),
+    ]
+
+    for manager, install_cmd in install_sequences:
+        if not _remote_command_available(ssh_args, manager):
+            continue
+        print(f"[INSTALL] 检测到远端包管理器 {manager}，尝试安装 rsync …")
+        try:
+            subprocess.run(list(ssh_args) + install_cmd, check=True)
+        except subprocess.CalledProcessError as exc:
+            print(f"[FAIL] 通过 {manager} 安装 rsync 失败，返回码 {exc.returncode}。")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ERROR] 执行 {manager} 安装命令时出错：{exc}")
+            continue
+
+        if _remote_command_available(ssh_args, "rsync"):
+            version_cmd = list(ssh_args) + ["rsync", "--version"]
+            try:
+                version_result = subprocess.run(version_cmd, capture_output=True, text=True)
+                version_line = (
+                    version_result.stdout.splitlines()[0]
+                    if version_result.stdout
+                    else "rsync"
+                )
+            except Exception:  # noqa: BLE001 - 若读取版本失败，使用默认描述
+                version_line = "rsync"
+            print(f"[OK] 已在远端安装 rsync：{version_line}")
+            return True
+        print(f"[WARN] 使用 {manager} 安装后仍未检测到 rsync，尝试下一个方案。")
+
+    return False
+
+
 def install_remote_rsync(user: str, host: str, keyfile: Optional[str] = None) -> bool:
     """通过 SSH 检测并在必要时安装远端 rsync。"""
 
@@ -48,19 +145,8 @@ def install_remote_rsync(user: str, host: str, keyfile: Optional[str] = None) ->
 
     # 打印检测提示，保持与其它日志格式一致。
     print("[CHECK] 正在检测远端 rsync ...")
-    # 构造用于检测 rsync 是否存在的命令。
-    check_cmd = ssh_args + ["command", "-v", "rsync"]
-
-    try:
-        # 执行检测命令并捕获结果。
-        check_result = subprocess.run(check_cmd, capture_output=True, text=True)
-    except Exception as exc:
-        # 当 SSH 执行失败时输出错误信息。
-        print(f"[ERROR] 无法连接远端主机或执行检测命令：{exc}")
-        return False
-
     # 若命令返回码为 0，表示远端已安装 rsync。
-    if check_result.returncode == 0:
+    if _remote_command_available(ssh_args, "rsync"):
         # 进一步查询远端 rsync 版本并输出。
         version_cmd = ssh_args + ["rsync", "--version"]
         try:
@@ -71,45 +157,14 @@ def install_remote_rsync(user: str, host: str, keyfile: Optional[str] = None) ->
         print(f"[OK] 远端 rsync 已存在：{version_line}")
         return True
 
-    # 当远端缺少 rsync 时，提示用户是否执行安装。
-    try:
-        choice = input("远端未检测到 rsync，是否自动安装？(y/n): ").strip().lower()
-    except EOFError:
-        choice = "n"
+    print("[WARN] 远端未检测到 rsync，尝试自动安装 …")
 
-    if choice != "y":
-        # 用户拒绝安装时给出跳过提示。
-        print("[SKIP] 用户取消安装远端 rsync。")
-        return False
+    if _attempt_remote_install(ssh_args):
+        return True
 
-    # 打印安装开始提示。
-    print("[INSTALL] 正在通过 SSH 安装远端 rsync ...")
-    # 构造通过 bash -lc 执行的安装命令字符串。
-    remote_install = "sudo apt-get update -y && sudo apt-get install -y rsync"
-    install_cmd = ssh_args + ["bash", "-lc", remote_install]
-
-    try:
-        # 执行安装命令并在失败时抛出异常。
-        subprocess.run(install_cmd, check=True)
-    except subprocess.CalledProcessError as exc:
-        # 捕获命令返回非零状态的情况。
-        print(f"[FAIL] 远端 rsync 安装失败，返回码 {exc.returncode}。")
-        return False
-    except Exception as exc:
-        # 捕获其它潜在异常并反馈。
-        print(f"[ERROR] 执行远端安装命令时出错：{exc}")
-        return False
-
-    # 安装成功后再次检测并输出结果。
-    print("[CHECK] 正在验证远端 rsync 安装结果 ...")
-    verify_cmd = ssh_args + ["rsync", "--version"]
-    try:
-        verify_result = subprocess.run(verify_cmd, capture_output=True, text=True)
-        version_line = verify_result.stdout.splitlines()[0] if verify_result.stdout else "rsync"
-    except Exception:
-        version_line = "rsync"
-    print(f"[OK] 已在远端安装 rsync：{version_line}")
-    return True
+    print("[FAIL] 已尝试所有自动方案，仍未能在远端安装 rsync。")
+    print("[HINT] 请手动连接远端执行安装命令后重试。")
+    return False
 
 # 定义一个辅助函数，用于组装 ssh 目标字符串。
 def _build_target(host: str, user: Optional[str]) -> str:

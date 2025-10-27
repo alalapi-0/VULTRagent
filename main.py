@@ -543,22 +543,29 @@ def handle_remote_bootstrap(config: Dict) -> None:
         # 当状态文件格式损坏时提醒用户重新选择。
         console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
         return
-    # 从状态信息中提取远端 IP 地址。
+    # 从状态信息中提取远端 IP 地址，允许通过环境变量覆盖。
     ip_address = state.get("ip", "")
+    env_host = os.environ.get("VULTR_REMOTE_HOST", "").strip()
+    if env_host:
+        ip_address = env_host
     # 如果没有 IP 地址则无法继续操作。
     if not ip_address:
-        console.print("[red]状态文件缺少远端 IP 地址，请重新选择实例。[/red]")
+        console.print(
+            "[red]无法确定远端 IP 地址，请先在菜单 2 保存实例或设置 VULTR_REMOTE_HOST 环境变量。[/red]"
+        )
         return
     # 读取 ssh 配置段，获取用户名与密钥路径。
     ssh_conf = config.get("ssh", {}) if config else {}
     # 获取远端登录用户名。
-    ssh_user = ssh_conf.get("user", "")
+    ssh_user = ssh_conf.get("user", "") or os.environ.get("VULTR_REMOTE_USER", "").strip()
     # 如果未配置用户名则提示用户补全配置。
     if not ssh_user:
-        console.print("[red]配置文件缺少 ssh.user，请先更新 config.yaml。[/red]")
+        console.print(
+            "[red]缺少远端登录用户名，请在 config.yaml 配置 ssh.user 或设置 VULTR_REMOTE_USER 环境变量。[/red]"
+        )
         return
     # 解析私钥路径，允许留空以使用默认凭据。
-    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key = ssh_conf.get("keyfile", "") or os.environ.get("VULTR_REMOTE_KEYFILE", "")
     # 如果用户提供了私钥路径，则展开 ~ 以获得绝对路径。
     ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
     # 构造本地脚本路径并确保其存在。
@@ -568,6 +575,12 @@ def handle_remote_bootstrap(config: Dict) -> None:
     # 在终端提示用户正在执行的操作。
     console.print(f"[blue]正在将部署脚本上传到 {ip_address} …[/blue]")
     try:
+        # 在部署脚本之前确保远端 rsync 已就绪。
+        install_remote_rsync(
+            user=ssh_user,
+            host=ip_address,
+            keyfile=ssh_key_path or None,
+        )
         # 调用核心函数上传脚本并执行远端部署流程。
         report = upload_and_bootstrap(
             user=ssh_user,
@@ -1193,25 +1206,6 @@ if __name__ == "__main__":
     if not ensure_local_rsync(interactive=True):
         # 当本地缺少 rsync 时给出警告提示。
         print("[WARN] 本地 rsync 未就绪，请确认安装后重启程序。")
-    # 询问用户是否需要检测远端 rsync 状态。
-    try:
-        remote_choice = input("\n是否检测远端 rsync 状态？(y/n): ").strip().lower()
-    except EOFError:
-        remote_choice = "n"
-    if remote_choice == "y":
-        # 获取远端用户名，默认值为 ubuntu。
-        remote_user = input("请输入远端用户名 (默认: ubuntu): ") or "ubuntu"
-        # 获取远端主机地址。
-        remote_host = input("请输入远端 IP 地址: ").strip()
-        # 获取可选的 SSH 私钥路径并将空字符串转换为 None。
-        keyfile_input = input("请输入 SSH 私钥路径 (可留空): ").strip()
-        keyfile_path = keyfile_input or None
-        if not remote_host:
-            # 未提供主机地址时提示用户并跳过安装流程。
-            print("[WARN] 未提供远端 IP，已跳过远端 rsync 检测。")
-        else:
-            # 调用 install_remote_rsync 执行远端检测与安装逻辑。
-            install_remote_rsync(user=remote_user, host=remote_host, keyfile=keyfile_path)
     # 当没有额外命令行参数时直接进入交互式菜单，满足 "python main.py" 启动要求。
     if len(sys.argv) == 1:
         # 直接调用交互式菜单。
