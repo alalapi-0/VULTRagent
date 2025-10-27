@@ -484,12 +484,25 @@ def tail_and_mirror_log(
             print("[remote_exec] ℹ️ Windows 环境建议安装 Git for Windows 或启用 WSL 以获得 rsync 支持。")
         else:
             print("[remote_exec] ℹ️ 请通过包管理器安装 rsync，例如 sudo apt install -y rsync。")
+    # 预构建 ssh 基础参数，供后续 rsync 与 tail 复用。
+    ssh_base_args = list(_base_ssh_args(host, user, keyfile))
+
+    # 在存在本地 rsync 的前提下，优先确认远端同样具备 rsync 能力。
+    if rsync_available and not _remote_command_available(ssh_base_args, "rsync"):
+        print("[remote_exec] ⚠️ 远端未检测到 rsync，日志镜像将降级为仅使用 tail 输出。")
+        print(
+            "[remote_exec] ℹ️ 请在远端安装 rsync（例如执行 sudo apt install -y rsync）后重试。"
+        )
+        rsync_available = False
+
     # 构建远端目标字符串，使用 shlex.quote 确保路径安全。
     remote_target = f"{user}@{host}:{shlex.quote(remote_log)}"
-    # 构建 ssh 传输配置，若提供密钥则拼接 -i 选项。
-    ssh_transport = "ssh"
-    if keyfile:
-        ssh_transport = f"ssh -i {shlex.quote(keyfile)}"
+    # 基于 ssh_base_args 生成 -e 参数所需的 ssh 传输配置。
+    ssh_transport_parts = ssh_base_args[:-1]
+    ssh_transport = " ".join(shlex.quote(part) for part in ssh_transport_parts)
+    if rsync_available and not ssh_transport:
+        print("[remote_exec] ⚠️ 无法构建 rsync 所需的 ssh 参数，已降级为仅使用 tail 输出。")
+        rsync_available = False
     # 组装 rsync 命令列表，便于后续重复调用。
     rsync_cmd = [
         rsync_path or "rsync",
@@ -553,7 +566,7 @@ def tail_and_mirror_log(
         mirror_thread = threading.Thread(target=_mirror_worker, name="log-mirror", daemon=True)
         mirror_thread.start()
     # 构建 tail -F 命令以实时跟踪远端日志。
-    tail_args = list(_base_ssh_args(host, user, keyfile))
+    tail_args = list(ssh_base_args)
     tail_args.append(f"tail -n +1 -F {shlex.quote(remote_log)}")
     # 打印提示，告知用户如何退出实时查看。
     print(f"[remote_exec] ▶ tail -F {remote_log}（按 Ctrl+C 结束）")
