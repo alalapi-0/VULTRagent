@@ -27,6 +27,7 @@ REQUIRED_PACKAGES=(
   tmux
   rsync
   ffmpeg
+  libavcodec-extra
   curl
   ca-certificates
 )
@@ -251,6 +252,14 @@ if [[ "$FFMPEG_VERSION_OUTPUT" == ffmpeg* ]]; then
   log_status "FFMPEG" "OK" "$FFMPEG_VERSION_OUTPUT"
 else
   log_status "FFMPEG" "FAIL" "$FFMPEG_VERSION_OUTPUT"
+  OVERALL_STATUS="FAIL"
+fi
+
+FFMPEG_AAC_CODEC_LINE="$(ffmpeg -hide_banner -codecs 2>/dev/null | grep -E '\bDE[A-Z.]*\s+aac\b' || true)"
+if [ -n "$FFMPEG_AAC_CODEC_LINE" ]; then
+  log_status "FFMPEG_AAC" "OK" "检测到 AAC 解码器：$FFMPEG_AAC_CODEC_LINE"
+else
+  log_status "FFMPEG_AAC" "FAIL" "未检测到 AAC 解码器，已安装 libavcodec-extra"
   OVERALL_STATUS="FAIL"
 fi
 
