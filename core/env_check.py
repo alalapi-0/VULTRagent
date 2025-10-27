@@ -71,6 +71,8 @@ def _common_windows_rsync_locations() -> Iterable[Path]:
 
     _extend(program_files, "Git", "usr", "bin", "rsync.exe")
     _extend(program_files_x86, "Git", "usr", "bin", "rsync.exe")
+    _extend(program_files, "Git", "bin", "rsync.exe")
+    _extend(program_files_x86, "Git", "bin", "rsync.exe")
     _extend(program_files, "cwRsync", "bin", "rsync.exe")
     _extend(program_files_x86, "cwRsync", "bin", "rsync.exe")
     _extend(local_app, "Programs", "Git", "usr", "bin", "rsync.exe")
@@ -81,7 +83,13 @@ def _common_windows_rsync_locations() -> Iterable[Path]:
             home / "cwrsync" / "bin" / "rsync.exe",
             Path("C:/cwrsync/bin/rsync.exe"),
             Path("C:/Program Files/Git/usr/bin/rsync.exe"),
+            Path("C:/Program Files/Git/bin/rsync.exe"),
             Path("C:/Program Files (x86)/Git/usr/bin/rsync.exe"),
+            Path("C:/Program Files (x86)/Git/bin/rsync.exe"),
+            Path("C:/cygwin64/bin/rsync.exe"),
+            Path("C:/cygwin/bin/rsync.exe"),
+            Path("C:/msys64/usr/bin/rsync.exe"),
+            Path("C:/msys32/usr/bin/rsync.exe"),
         ]
     )
 
