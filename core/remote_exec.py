@@ -9,8 +9,6 @@ import os
 import platform
 # 导入 signal 模块用于在终止日志追踪时向子进程发送信号。
 import signal
-# 导入 shutil 模块用于检查本地 rsync 是否可用。
-import shutil
 # 导入 subprocess 模块以调用外部命令并捕获输出。
 import subprocess
 # 导入 threading 模块用于在后台执行周期性 rsync。
@@ -25,6 +23,8 @@ from pathlib import Path
 import shlex
 # 导入 typing 模块中的 Dict、Optional、Sequence 类型用于类型注解。
 from typing import Dict, Optional, Sequence
+
+from core.env_check import detect_local_rsync
 
 
 def _remote_command_available(ssh_args: Sequence[str], command: str) -> bool:
@@ -473,7 +473,8 @@ def tail_and_mirror_log(
     # 输出路径摘要，帮助用户定位本地日志。
     print(f"[remote_exec] 📁 本地日志将保存到 {local_log_path}。")
     # 检测本地是否安装 rsync，用于决定是否启用镜像线程。
-    rsync_path = shutil.which("rsync") or os.environ.get("RSYNC_PATH")
+    detected_rsync = detect_local_rsync()
+    rsync_path = str(detected_rsync) if detected_rsync else os.environ.get("RSYNC_PATH")
     rsync_available = rsync_path is not None
     if not rsync_available:
         # 若 rsync 不可用，则给出安装提示并说明降级行为。
@@ -524,7 +525,7 @@ def tail_and_mirror_log(
                 )
             return result.returncode
         except FileNotFoundError:
-            # 在极端情况下，shutil.which 未检测到但命令仍缺失时回退到降级模式。
+            # 在极端情况下，即使之前检测成功仍可能无法调用 rsync，此时退回降级模式。
             print("[remote_exec] ⚠️ 未找到 rsync 命令，已降级为仅 tail 模式。")
             rsync_available = False
             return 1

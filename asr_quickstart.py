@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable, List, Sequence
 
 import typer
+from typer.main import get_command
 from rich.console import Console
 from rich.table import Table
 
@@ -152,6 +153,10 @@ def run(
         console.print(
             f"[green][asr_quickstart] 已生成 {len(results)} 个占位结果，详情见 {output_dir}。[/green]"
         )
+        for relative, output_file in results:
+            console.print(
+                f"[green]  ↳ {relative.with_suffix('.json')} ({output_file.stat().st_size} bytes)[/green]"
+            )
     else:
         console.print(
             f"[yellow][asr_quickstart] 未生成输出文件。请在 {input_dir} 提供样本后重试。[/yellow]"
@@ -164,15 +169,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point used by ``python asr_quickstart.py``."""
 
     argv = list(argv or sys.argv[1:])
-    # ``typer`` treats ``python script.py`` as calling the default command.  The
-    # original implementation attempted to inject a ``run`` subcommand manually,
-    # which broke invocation via ``python asr_quickstart.py``.  We now simply
-    # allow Typer to process the arguments directly while gracefully ignoring an
-    # explicit ``run`` prefix for backwards compatibility.
+    # 兼容 ``python asr_quickstart.py run`` 与 ``python asr_quickstart.py`` 的两种写法。
     if argv[:1] == ["run"]:
         argv = argv[1:]
+
+    command = get_command(app)
     try:
-        app(args=argv, standalone_mode=False)
+        command.main(
+            args=argv,
+            prog_name="asr_quickstart.py",
+            standalone_mode=False,
+        )
     except typer.Exit as exc:  # Typer raises typer.Exit for normal termination.
         return exc.exit_code
     return 0

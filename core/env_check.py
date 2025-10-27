@@ -13,9 +13,10 @@ import subprocess
 # 导入 pathlib.Path 用于跨平台处理本地路径。
 from pathlib import Path
 # 导入 typing 中的 Iterable 与 Optional，以实现更健壮的路径检测逻辑。
-from typing import Iterable, Optional
-# 从 core.remote_exec 模块导入 install_remote_rsync 以便其他模块可直接复用。
-from core.remote_exec import install_remote_rsync
+from typing import Iterable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - 仅用于类型检查，避免循环依赖。
+    from core.remote_exec import install_remote_rsync as _install_remote_rsync
 
 # 定义 cwRsync 的官方下载地址，用于在 Windows 环境下自动拉取 rsync。
 _CWRSYNC_ZIP_URL = "https://www.itefix.net/dl/cwRsync_6.2.1_x64_free.zip"
@@ -114,6 +115,12 @@ def _resolve_rsync_path() -> Optional[Path]:
                 return candidate
 
     return None
+
+
+def detect_local_rsync() -> Optional[Path]:
+    """返回可用的 rsync 路径，未找到时返回 ``None``。"""
+
+    return _resolve_rsync_path()
 
 
 def _run_commands(commands):
@@ -355,4 +362,12 @@ def ensure_local_rsync(interactive: bool = True) -> bool:
     return False
 
 
-__all__ = ["ensure_local_rsync", "install_remote_rsync"]
+def install_remote_rsync(*args, **kwargs):  # type: ignore[override]
+    """延迟导入 ``install_remote_rsync`` 以避免循环依赖。"""
+
+    from core.remote_exec import install_remote_rsync as _install_remote_rsync
+
+    return _install_remote_rsync(*args, **kwargs)
+
+
+__all__ = ["detect_local_rsync", "ensure_local_rsync", "install_remote_rsync"]
