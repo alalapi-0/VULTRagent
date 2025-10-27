@@ -1,12 +1,26 @@
 # core/remote_exec.py
 # 该模块提供基于系统 ssh/scp 命令的封装，方便其他模块调用远端指令。
 
+# 导入 json 模块用于读取状态文件以确定实例信息。
+import json
 # 导入 os 模块用于处理路径与目录名。
 import os
+# 导入 platform 模块以检测操作系统类型并提供提示。
+import platform
 # 导入 signal 模块用于在终止日志追踪时向子进程发送信号。
 import signal
+# 导入 shutil 模块用于检查本地 rsync 是否可用。
+import shutil
 # 导入 subprocess 模块以调用外部命令并捕获输出。
 import subprocess
+# 导入 threading 模块用于在后台执行周期性 rsync。
+import threading
+# 导入 time 模块用于线程休眠控制。
+import time
+# 导入 datetime.datetime 用于创建时间戳目录。
+from datetime import datetime
+# 导入 pathlib.Path 以便跨平台构建路径。
+from pathlib import Path
 # 导入 shlex 模块用于在记录日志时安全拼接命令。
 import shlex
 # 导入 typing 模块中的 Dict、Optional、Sequence 类型用于类型注解。
@@ -201,6 +215,7 @@ def start_remote_job_in_tmux(
     cmd: str,
     session: str,
     log_file: str,
+    project_dir: str,
     keyfile: Optional[str] = None,
     env_vars: Optional[Dict[str, str]] = None,
 ) -> int:
@@ -215,6 +230,10 @@ def start_remote_job_in_tmux(
     # 确保日志文件路径存在，若为空则提示后退出。
     if not log_file:
         print("[remote_exec] ❌ 缺少日志文件路径，无法重定向输出。")
+        return 1
+    # 校验项目目录，缺失时无法在远端进入正确目录执行。
+    if not project_dir:
+        print("[remote_exec] ❌ 缺少项目目录，无法构建远端执行命令。")
         return 1
     # 如果目标 tmux 会话已存在，则尝试提前停止，避免重复创建报错。
     if has_tmux_session(user=user, host=host, session=session, keyfile=keyfile):
@@ -248,18 +267,54 @@ def start_remote_job_in_tmux(
             redacted_env[key] = "***"
         else:
             redacted_env[key] = str(value)
-    # 构造日志命令管道，将 stdout/stderr 通过 tee 追加到日志文件。
-    pipeline = f"{env_assignments} {cmd}".strip() if env_assignments else cmd
-    pipeline = f"{pipeline} 2>&1 | tee -a {shlex.quote(log_file)}"
-    # 组合为 bash -lc 调用，确保加载登录环境并支持管道。
-    bash_command = f"bash -lc {shlex.quote(pipeline)}"
+    # 组合注入环境变量后的真实命令，空值自动忽略。
+    command_with_env = f"{env_assignments} {cmd}".strip() if env_assignments else cmd
+    # 构造在日志中展示的命令，敏感变量已替换。
+    redacted_assignments = " ".join(
+        f"{key}={shlex.quote(value)}" for key, value in redacted_env.items()
+    )
+    # 将敏感信息替换后的命令用于本地提示。
+    redacted_command = (
+        f"{redacted_assignments} {cmd}".strip() if redacted_assignments else cmd
+    )
+    # 为日志记录准备一份转义后的命令文本，避免双引号导致语法错误。
+    escaped_for_log = command_with_env.replace("\"", r"\\\"")
+    # 对远端日志路径进行 shell 转义，避免空格导致失败。
+    quoted_log_file = shlex.quote(log_file)
+    # 对项目目录进行转义，确保 cd 指令安全。
+    quoted_project_dir = shlex.quote(project_dir)
+    # 构造记录开始时间与命令的 echo 语句。
+    start_line = (
+        f'echo "[START] $(date -Is) session={session} cmd={escaped_for_log}" | '
+        f"tee -a {quoted_log_file}"
+    )
+    # 构造执行主体，将 stdout/stderr 合并并通过 tee 追加到日志。
+    pipeline = (
+        f"{command_with_env} 2>&1 | tee -a {quoted_log_file}"
+    )
+    # 构造结束语句，记录退出码并同样写入日志。
+    end_line = (
+        f'echo "[END] $(date -Is) exit_code=${{exit_code}}" | tee -a {quoted_log_file}'
+    )
+    # 组合完整的 bash 片段，确保在项目目录下运行并维护退出码。
+    bash_body = (
+        f"cd {quoted_project_dir} && {{ {start_line}; {pipeline}; "
+        f"exit_code=${{PIPESTATUS[0]}}; {end_line}; exit $exit_code; }}"
+    )
+    # 使用 bash -lc 执行组合后的脚本片段。
+    bash_command = f"bash -lc {shlex.quote(bash_body)}"
     # 将命令封装为 tmux new-session 的参数，后台启动会话。
     tmux_command = f"tmux new-session -d -s {shlex.quote(session)} {shlex.quote(bash_command)}"
-    # 构造用于展示的命令字符串，敏感值已替换。
-    redacted_assignments = " ".join(f"{key}={shlex.quote(value)}" for key, value in redacted_env.items())
-    redacted_pipeline = f"{redacted_assignments} {cmd}".strip() if redacted_assignments else cmd
-    redacted_pipeline = f"{redacted_pipeline} 2>&1 | tee -a {log_file}"
-    redacted_display = f"tmux new-session -d -s {session} \"bash -lc '{redacted_pipeline}'\""
+    # 构造敏感信息已替换的展示命令，便于用户排查问题。
+    redacted_pipeline = f"{redacted_command} 2>&1 | tee -a {log_file}"
+    redacted_body = (
+        f"cd {project_dir} && {{ echo \"[START] $(date -Is) session={session} cmd={redacted_command}\" | "
+        f"tee -a {log_file}; {redacted_pipeline}; exit_code=${{PIPESTATUS[0]}}; "
+        f"echo \"[END] $(date -Is) exit_code=${{exit_code}}\" | tee -a {log_file}; exit $exit_code; }}"
+    )
+    redacted_display = (
+        f"tmux new-session -d -s {session} \"bash -lc {shlex.quote(redacted_body)}\""
+    )
     # 打印最终命令，便于用户复制执行。
     print(f"[remote_exec] ▶ {redacted_display}")
     # 调用 run_ssh_command 在远端执行 tmux 命令。
@@ -315,6 +370,181 @@ def tail_remote_log(
         process.wait()
     # 返回子进程退出码，130 表示被 Ctrl+C 中断。
     return process.returncode
+
+
+# 定义实时追踪并镜像远端日志的函数。
+def tail_and_mirror_log(
+    user: str,
+    host: str,
+    remote_log: str,
+    local_log_dir: str,
+    local_filename: str = "run.log",
+    keyfile: Optional[str] = None,
+    mirror_interval_sec: int = 3,
+) -> int:
+    # 校验必需的连接参数，缺失时直接返回错误码。
+    if not host or not remote_log:
+        print("[remote_exec] ❌ 缺少 host 或 remote_log，无法执行日志镜像。")
+        return 1
+    # 若未提供 SSH 用户名，则无法建立连接。
+    if not user:
+        print("[remote_exec] ❌ 缺少 SSH 用户名，无法连接远端主机。")
+        return 1
+    # 解析状态文件以确定实例标签或 ID。
+    state_path = Path(__file__).resolve().parent.parent / ".state.json"
+    instance_label = ""
+    instance_id = ""
+    if state_path.exists():
+        try:
+            with state_path.open("r", encoding="utf-8") as handle:
+                state_data = json.load(handle)
+            instance_label = state_data.get("label", "") or ""
+            instance_id = state_data.get("instance_id", "") or ""
+        except json.JSONDecodeError:
+            print("[remote_exec] ⚠️ .state.json 无法解析，将使用主机地址作为日志目录。")
+    else:
+        print("[remote_exec] ⚠️ 未找到 .state.json，将使用主机地址作为日志目录。")
+    # 计算用于存放本地日志的目录名称，优先使用实例标签，其次 ID，最后使用主机名。
+    base_name = instance_label or instance_id or host.replace(".", "-")
+    # 生成时间戳目录，采用本地时间以方便对应操作时间。
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # 构建最终的本地日志目录路径。
+    local_root_path = Path(local_log_dir).expanduser()
+    session_dir = local_root_path / base_name / timestamp
+    # 确保目录存在，必要时递归创建。
+    session_dir.mkdir(parents=True, exist_ok=True)
+    # 拼接本地日志文件的完整路径。
+    local_log_path = session_dir / local_filename
+    # 输出路径摘要，帮助用户定位本地日志。
+    print(f"[remote_exec] 📁 本地日志将保存到 {local_log_path}。")
+    # 检测本地是否安装 rsync，用于决定是否启用镜像线程。
+    rsync_available = shutil.which("rsync") is not None
+    if not rsync_available:
+        # 若 rsync 不可用，则给出安装提示并说明降级行为。
+        system_name = platform.system().lower()
+        print("[remote_exec] ⚠️ 未检测到本地 rsync，日志镜像将降级为仅使用 tail 输出。")
+        if "windows" in system_name:
+            print("[remote_exec] ℹ️ Windows 环境建议安装 Git for Windows 或启用 WSL 以获得 rsync 支持。")
+        else:
+            print("[remote_exec] ℹ️ 请通过包管理器安装 rsync，例如 sudo apt install -y rsync。")
+    # 构建远端目标字符串，使用 shlex.quote 确保路径安全。
+    remote_target = f"{user}@{host}:{shlex.quote(remote_log)}"
+    # 构建 ssh 传输配置，若提供密钥则拼接 -i 选项。
+    ssh_transport = "ssh"
+    if keyfile:
+        ssh_transport = f"ssh -i {shlex.quote(keyfile)}"
+    # 组装 rsync 命令列表，便于后续重复调用。
+    rsync_cmd = [
+        "rsync",
+        "-avz",
+        "--progress",
+        "-e",
+        ssh_transport,
+        remote_target,
+        str(local_log_path),
+    ]
+    # 定义一个辅助函数用于执行 rsync，并根据需要输出警告。
+    def _run_rsync(show_warnings: bool, suppress_output: bool) -> int:
+        # 声明使用外层的 rsync 可用状态，以便在降级时更新。
+        nonlocal rsync_available
+        # 当 rsync 不可用时直接返回成功，避免重复打印提示。
+        if not rsync_available:
+            return 0
+        try:
+            # 根据 suppress_output 参数决定是否隐藏 rsync 详细输出。
+            stdout_target = subprocess.DEVNULL if suppress_output else None
+            stderr_target = subprocess.STDOUT if suppress_output else None
+            # 执行 rsync 命令并返回退出码。
+            result = subprocess.run(
+                rsync_cmd,
+                check=False,
+                stdout=stdout_target,
+                stderr=stderr_target,
+            )
+            # 在需要时输出警告，提醒用户关注同步失败。
+            if result.returncode != 0 and show_warnings:
+                print(
+                    f"[remote_exec] ⚠️ rsync 同步失败，退出码 {result.returncode}。稍后将重试。"
+                )
+            return result.returncode
+        except FileNotFoundError:
+            # 在极端情况下，shutil.which 未检测到但命令仍缺失时回退到降级模式。
+            print("[remote_exec] ⚠️ 未找到 rsync 命令，已降级为仅 tail 模式。")
+            rsync_available = False
+            return 1
+    # 在进入实时查看之前执行一次全量 rsync，保证本地拥有最新快照。
+    if rsync_available:
+        print("[remote_exec] 🔄 正在执行初次 rsync，同步远端日志。")
+        initial_code = _run_rsync(show_warnings=True, suppress_output=False)
+        if initial_code != 0:
+            print("[remote_exec] ⚠️ 初次 rsync 失败，将继续通过 tail 获取实时输出。")
+    # 创建用于停止后台线程的事件对象。
+    stop_event = threading.Event()
+    # 定义后台线程逻辑，周期性地触发 rsync 增量同步。
+    def _mirror_worker() -> None:
+        # 持续运行直到主线程发出停止信号。
+        while not stop_event.is_set():
+            # 等待指定的时间间隔，期间若收到停止信号则提前退出。
+            interval = mirror_interval_sec if mirror_interval_sec > 0 else 3
+            if stop_event.wait(timeout=interval):
+                break
+            # 执行 rsync 并忽略非零退出码，仅在需要时输出警告。
+            _run_rsync(show_warnings=True, suppress_output=True)
+    # 当 rsync 可用时启动后台镜像线程。
+    mirror_thread: Optional[threading.Thread] = None
+    if rsync_available:
+        mirror_thread = threading.Thread(target=_mirror_worker, name="log-mirror", daemon=True)
+        mirror_thread.start()
+    # 构建 tail -F 命令以实时跟踪远端日志。
+    tail_args = list(_base_ssh_args(host, user, keyfile))
+    tail_args.append(f"tail -n +1 -F {shlex.quote(remote_log)}")
+    # 打印提示，告知用户如何退出实时查看。
+    print(f"[remote_exec] ▶ tail -F {remote_log}（按 Ctrl+C 结束）")
+    # 预先声明子进程变量，便于在上下文外部访问退出码。
+    process: Optional[subprocess.Popen] = None
+    # 以追加模式打开本地日志文件，确保实时输出同步写入。
+    with local_log_path.open("a", encoding="utf-8", errors="replace") as local_handle:
+        # 启动 ssh 子进程，并将 stdout 合并 stderr。
+        process = subprocess.Popen(
+            tail_args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        try:
+            # 逐行读取远端输出，既打印到控制台也写入本地文件。
+            for line in iter(process.stdout.readline, ""):
+                print(line, end="")
+                local_handle.write(line)
+                local_handle.flush()
+        except KeyboardInterrupt:
+            # 当用户按下 Ctrl+C 时提示并向远端 tail 发送中断信号。
+            print("\n[remote_exec] ⏹ 捕获到中断信号，正在停止 tail 会话……")
+            interrupt_signal = getattr(signal, "SIGINT", signal.SIGTERM)
+            process.send_signal(interrupt_signal)
+        finally:
+            # 等待子进程退出以获取最终退出码。
+            process.wait()
+            # 通知后台镜像线程可以停止运行。
+            stop_event.set()
+    # 等待镜像线程结束，确保最后一次同步完成。
+    if mirror_thread is not None:
+        mirror_thread.join()
+    # 在退出界面前执行最后一次 rsync，确保遗漏的内容被补齐。
+    if rsync_available:
+        print("[remote_exec] 🔁 正在进行最终 rsync，确保日志完整。")
+        _run_rsync(show_warnings=True, suppress_output=True)
+    # 取得 tail 子进程的退出码，若为 130（Ctrl+C）则视为正常退出。
+    exit_code = process.returncode if process else 0
+    if exit_code == 130:
+        exit_code = 0
+    # 输出收尾信息，告知用户本地日志的存放位置。
+    print(f"[remote_exec] 📦 日志查看结束，本地副本位于 {local_log_path}。")
+    # 返回最终的退出码。
+    return exit_code
 
 # 定义停止远端 tmux 会话的函数。
 def stop_tmux_session(

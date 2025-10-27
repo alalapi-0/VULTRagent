@@ -45,6 +45,12 @@ cleanup:
   rotate_remote_logs: true
   keep_log_backups: 5
 
+logging:
+  local_root: "./logs"          # 本地日志根目录
+  filename: "run.log"           # 本地保存的文件名（每次会放入带实例与时间戳的目录）
+  mirror_on_view: true           # 进入“实时查看”时，是否自动镜像到本地
+  mirror_interval_sec: 3         # 实时查看时，附加的周期性 rsync 间隔（秒）
+
 huggingface:
   token: ""              # 运行时从本地 config.yaml 注入，仓库中保持留空
   persist_login: true     # 是否使用 huggingface-cli 进行持久化登录

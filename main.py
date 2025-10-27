@@ -36,6 +36,7 @@ from core.vultr_api import get_instance_info, list_instances
 from core.remote_exec import (
     run_ssh_command,
     tail_remote_log,
+    tail_and_mirror_log,
     stop_tmux_session,
     has_tmux_session,
     install_remote_rsync,
@@ -855,16 +856,38 @@ def handle_tail_logs(config: Dict) -> None:
     if not log_file:
         console.print("[red]配置文件缺少 remote.log_file，无法查看日志。[/red]")
         return
+    # 解析本地日志镜像配置。
+    logging_conf = config.get("logging", {}) if config else {}
+    mirror_on_view = logging_conf.get("mirror_on_view", True)
+    local_root = logging_conf.get("local_root", "./logs")
+    local_filename = logging_conf.get("filename", "run.log")
+    mirror_interval = logging_conf.get("mirror_interval_sec", 3)
+    try:
+        mirror_interval_value = int(mirror_interval)
+    except (TypeError, ValueError):
+        mirror_interval_value = 3
     # 提示用户正在连接并展示日志位置。
     console.print(f"[blue]开始实时查看 {ip_address}:{log_file}，按 Ctrl+C 结束。[/blue]")
     try:
-        # 调用核心函数执行 tail -f。
-        exit_code = tail_remote_log(
-            user=ssh_user,
-            host=ip_address,
-            log_path=log_file,
-            keyfile=ssh_key_path or None,
-        )
+        if mirror_on_view:
+            # 当启用镜像时，调用增强函数同步日志到本地。
+            exit_code = tail_and_mirror_log(
+                user=ssh_user,
+                host=ip_address,
+                remote_log=log_file,
+                local_log_dir=local_root,
+                local_filename=local_filename,
+                keyfile=ssh_key_path or None,
+                mirror_interval_sec=mirror_interval_value,
+            )
+        else:
+            # 否则退回到轻量版 tail。
+            exit_code = tail_remote_log(
+                user=ssh_user,
+                host=ip_address,
+                log_path=log_file,
+                keyfile=ssh_key_path or None,
+            )
     except OSError as exc:
         console.print(f"[red]查看日志时发生系统错误：{exc}[/red]")
         return
