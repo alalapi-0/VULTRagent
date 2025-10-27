@@ -10,6 +10,10 @@ real ASR pipeline.
 from __future__ import annotations
 
 import json
+import logging
+import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,6 +23,18 @@ import typer
 from typer.main import get_command
 from rich.console import Console
 from rich.table import Table
+
+
+os.environ.setdefault("LANG", "C.UTF-8")
+os.environ.setdefault("LC_ALL", "C.UTF-8")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(add_completion=False, help="Placeholder ASR pipeline.")
 
@@ -74,6 +90,124 @@ def _describe_inputs(files: Sequence[Path]) -> None:
         )
 
     console.print(table)
+
+
+class AudioPreparationError(RuntimeError):
+    """Raised when preprocessing audio inputs fails."""
+
+
+def _maybe_transcode_input(input_path: Path) -> Path:
+    """Ensure *input_path* is a WAV file ready for downstream processing."""
+
+    if not input_path.exists():
+        # If the user explicitly pointed to a file (has suffix) but it is
+        # missing, raise an informative error.  Otherwise, defer to the main
+        # pipeline which already handles missing directories gracefully.
+        if input_path.suffix:
+            raise AudioPreparationError(
+                f"音频路径不存在或无法访问：{input_path}"
+            )
+        return input_path
+
+    if input_path.is_dir():
+        return input_path
+
+    if not os.access(input_path, os.R_OK):
+        raise AudioPreparationError(f"音频路径不存在或无法访问：{input_path}")
+
+    if input_path.suffix.lower() == ".wav":
+        return input_path
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        raise AudioPreparationError("ffmpeg not found or audio decode failed")
+
+    output_path = Path("/tmp") / f"{input_path.stem}_16k.wav"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i",
+        str(input_path),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-f",
+        "wav",
+        "-acodec",
+        "pcm_s16le",
+        str(output_path),
+    ]
+
+    logger.info("检测到非 WAV 输入，使用 ffmpeg 转码：%s", " ".join(cmd))
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise AudioPreparationError("ffmpeg not found or audio decode failed") from exc
+    except subprocess.CalledProcessError as exc:
+        logger.error("ffmpeg 转码失败：%s", exc.stderr)
+        raise AudioPreparationError("ffmpeg not found or audio decode failed") from exc
+
+    if completed.stderr:
+        logger.debug("ffmpeg stderr: %s", completed.stderr)
+
+    if not output_path.exists():
+        raise AudioPreparationError("ffmpeg not found or audio decode failed")
+
+    logger.info("音频已转码为 16 kHz 单声道 WAV：%s", output_path)
+    return output_path
+
+
+def _prepare_audio_arguments(argv: Sequence[str]) -> List[str]:
+    """Apply preprocessing (transcoding) to the ``--input`` argument if needed."""
+
+    args = list(argv)
+    input_arg_index: int | None = None
+    value_index: int | None = None
+    raw_value: str | None = None
+
+    for idx, arg in enumerate(args):
+        if arg == "--input":
+            if idx + 1 < len(args):
+                input_arg_index = idx
+                value_index = idx + 1
+                raw_value = args[value_index]
+            break
+        if arg.startswith("--input="):
+            input_arg_index = idx
+            raw_value = arg.split("=", 1)[1]
+            break
+
+    if not raw_value:
+        return args
+
+    try:
+        input_path = Path(raw_value).expanduser()
+        transcoded_path = _maybe_transcode_input(input_path)
+    except AudioPreparationError:
+        raise
+    except Exception as exc:  # Catch unexpected edge cases for logging clarity.
+        raise AudioPreparationError(
+            f"音频路径处理失败：{raw_value}"
+        ) from exc
+
+    if transcoded_path == input_path:
+        return args
+
+    new_value = str(transcoded_path)
+    if value_index is not None:
+        args[value_index] = new_value
+    elif input_arg_index is not None:
+        args[input_arg_index] = f"--input={new_value}"
+
+    logger.info("命令行参数已更新，后续流程将使用：%s", new_value)
+    return args
 
 
 @app.command("run")
@@ -175,13 +309,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     command = get_command(app)
     try:
+        argv = _prepare_audio_arguments(argv)
         command.main(
             args=argv,
             prog_name="asr_quickstart.py",
             standalone_mode=False,
         )
+    except AudioPreparationError as exc:
+        logger.exception("ASR pipeline failed during audio preparation")
+        print(f"音频处理失败：{exc}", file=sys.stderr)
+        return 1
     except typer.Exit as exc:  # Typer raises typer.Exit for normal termination.
         return exc.exit_code
+    except Exception:
+        logger.exception("ASR pipeline failed")
+        print("ASR 流程执行失败，请检查日志和输入参数。", file=sys.stderr)
+        return 1
     return 0
 
 
