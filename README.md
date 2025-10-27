@@ -199,12 +199,12 @@ VULTRagent/
 1. 将本地 `scripts/bootstrap_remote.sh` 上传到远端 `/tmp/vultragentsvc_bootstrap.sh`（路径可在 `remote.bootstrap_tmp_path` 中自定义）。
 2. 通过 `ssh` 注入配置中的远端目录、日志路径、Hugging Face 选项等环境变量。
 3. 在远端执行脚本，完成以下任务：
-   - 更新包索引并安装 `git`、`git-lfs`、`python3`、`pip`、`tmux`、`rsync`、`ffmpeg`、`curl`、`ca-certificates` 等依赖；
+   - 更新包索引并安装 `git`、`git-lfs`、`python3`、`pip`、`tmux`、`rsync`、`ffmpeg`、`libavcodec-extra`、`curl`、`ca-certificates` 等依赖；
    - 初始化 Git LFS；
    - 创建 `base_dir`、`project_dir`、`inputs_dir`、`outputs_dir`、`models_dir` 及日志目录；
    - 自动派生并创建 `/home/ubuntu/asr_program/audio` 与 `/home/ubuntu/asr_program/output`，并将所有权调整为 `ubuntu:ubuntu`；
    - 可选执行 Hugging Face CLI 持久登录；
-   - 运行健康检查：输出 Python、pip、tmux、ffmpeg、git、磁盘空间及网络连通性状态。
+   - 运行健康检查：输出 Python、pip、tmux、ffmpeg、AAC 解码器、git、磁盘空间及网络连通性状态。
 
 部署脚本与文件同步流程会在必要时输出 `[OK] Created directories: ...`，健康检查表格也新增 `AUDIO_DIR` 与 `OUTPUT_DIR` 行以确认目录是否存在；若缺失会直接标记为失败。
 
@@ -214,6 +214,7 @@ VULTRagent/
 STATUS:PYTHON:OK:Python 3.10.12
 STATUS:PIP:OK:pip 23.1.2 from /usr/lib/python3/dist-packages/pip
 STATUS:FFMPEG:OK:ffmpeg version 5.1.2-...
+STATUS:FFMPEG_AAC:OK:检测到 AAC 解码器：DEA.L. aac Advanced Audio Coding
 STATUS:NETWORK:FAIL:网络检测失败
 STATUS:OVERALL:FAIL:环境部署与检查完成
 ```
@@ -364,7 +365,7 @@ Deployed branch=main commit=a1b2c3d entry=OK
 
 ## 下一步开发计划
 - **Round 2**：已实现 Vultr 实例管理与 API 错误处理基础能力。
-- **Round 3**：已实现 `bootstrap_remote.sh`、远端环境健康检查与 Hugging Face 登录集成。
+- **Round 3**：已实现 `bootstrap_remote.sh`、远端环境健康检查与 Hugging Face 登录集成，并在后续补充 `ffmpeg`/`libavcodec-extra` 自动安装与 AAC 解码器检测。
 - **Round 4**：实现远端仓库部署/更新与入口校验。
 - **Round 5**：实现素材上传、tmux 后台运行 ASR 与实时日志监控。
 - **Round 6**：整合 ASR 运行流程，支持实时日志回传。
