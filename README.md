@@ -300,10 +300,19 @@ Deployed branch=main commit=a1b2c3d entry=OK
   | `asr.python_bin` | Python 可执行文件（默认 `python3`） |
   | `asr.entry` | 入口脚本路径（相对 `remote.project_dir` 或绝对路径） |
   | `asr.args.input_dir` | `--input` |
-  | `asr.args.output_dir` | `--output` |
+  | `asr.args.output_dir` | `--output`（可在 `asr.args.flag_aliases` 中改写） |
   | `asr.args.models_dir` | `--models-dir` |
   | `asr.args.model` | `--model` |
   | `asr.args.extra` | 追加到命令末尾的自定义参数 |
+
+- 若远端入口脚本的参数名称与默认值不一致，可在 `asr.args.flag_aliases` 中逐项覆盖，例如：
+
+  ```yaml
+  asr:
+    args:
+      flag_aliases:
+        output_dir: "--out-dir"
+  ```
 
 - 示例：
   ```bash
