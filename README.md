@@ -1,5 +1,6 @@
 # VULTRagent
 
+> **新增内容（Round 7）**：ASR 启动命令统一追加 `stdbuf` + `tee`，日志首尾写入 `[START]/[END]` 元数据；实时查看时支持 rsync 镜像到本地并生成按实例与时间戳分组的日志副本，Windows 无 rsync 时自动降级。
 > **新增内容（Round 6）**：新增结果回传目录组织、断点重试与清单校验，支持回传后日志轮转及远端输出清理。
 > **新增内容（Round 5）**：新增素材上传、tmux 后台运行 ASR 及实时日志监控，支持 Hugging Face 环境变量注入与 rsync/scp 兼容流程。
 > **新增内容（Round 4）**：新增远端仓库部署/更新流程（支持 git-lfs、子模块、入口校验），并保留 Round 3 的一键环境部署与健康检查能力。
@@ -154,6 +155,33 @@ VULTRagent/
   - **cwRsync**：安装 [cwRsync](https://www.itefix.net/cwrsync) 后在 PowerShell 中调用 `rsync`。若无法安装，请接受 `scp` 降级并关注 README 的差异说明。
 
 回传成功后，若 `cleanup.rotate_remote_logs` 或 `cleanup.remove_remote_outputs` 为 `true`，系统会自动执行相应的远端清理操作，避免日志膨胀或输出目录堆积。日志轮转后的文件名为 `run-YYYYMMDD-HHMMSS.log`，并按照 `keep_log_backups` 保留最近若干份。
+
+## 日志实时镜像到本地（Round 7）
+
+- **远端命令增强**：菜单 7 启动 ASR 任务时，CLI 会自动构造如下命令片段：
+  ```bash
+  cd <project_dir> && \
+    echo "[START] $(date -Is) session=<tmux_session> cmd=<命令>" | tee -a <remote_log_file> && \
+    stdbuf -oL -eL <python_bin> <entry> ... 2>&1 | tee -a <remote_log_file> ; \
+    exit_code=${PIPESTATUS[0]} ; \
+    echo "[END] $(date -Is) exit_code=${exit_code}" | tee -a <remote_log_file>
+  ```
+  - `stdbuf -oL -eL` 强制标准输出/错误按行刷新，避免日志缓冲；
+  - `[START]` 与 `[END]` 行分别记录开始时间、tmux 会话名、完整命令以及最终退出码，方便后续排查。
+- **实时查看与镜像**：菜单 8 在 `logging.mirror_on_view=true` 时执行以下步骤：
+  1. 读取 `logging.local_root`、`logging.filename` 以及 `.state.json` 中的实例标签或 ID，创建目录 `./logs/<label-or-id>/<YYYYMMDD-HHMMSS>/`；
+  2. 实时查看前先执行一次 `rsync -avz --progress -e "ssh ..." <user>@<host>:<remote_log> <本地文件>`，获取远端日志的完整快照；
+  3. 启动后台线程按 `logging.mirror_interval_sec` 指定的间隔重复执行增量 rsync，网络抖动后也能自动补齐缺失片段；
+  4. 主线程使用 `ssh ... "tail -n +1 -F <remote_log>"`，既将日志逐行输出到控制台，也同步追加到本地文件，实现实时镜像；
+  5. 捕获 Ctrl+C 后停止 tail、结束后台线程，并进行最终一次 rsync，确保本地副本完整。
+- **目录示例**：
+  ```
+  ./logs/demo-instance/20240219-153000/run.log
+  ./logs/instance-123/20240220-101500/run.log
+  ```
+  每次进入实时查看都会创建新的时间戳目录，历史日志相互独立。
+- **Windows 兼容说明**：若本地缺少 `rsync`，程序会提示安装 Git for Windows 或启用 WSL；在无法安装的情况下自动降级为“仅 tail + 本地追加”模式，仍会将实时输出写入本地日志文件。
+- **轻量模式**：当 `logging.mirror_on_view=false` 时，菜单会回退到传统的 `tail -F`，仅实时显示而不做本地镜像。
 
 ## 停止与清理
 

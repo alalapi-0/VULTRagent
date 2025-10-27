@@ -28,7 +28,8 @@ def build_asr_command(
     # 如果入口脚本不是绝对路径，则拼接项目目录形成完整路径。
     entry_path = entry if entry.startswith("/") else f"{project_dir.rstrip('/')}/{entry}"
     # 构造命令的初始部分，包括 Python 可执行文件与入口脚本。
-    command_parts = [shlex.quote(python_bin or "python3"), shlex.quote(entry_path)]
+    # 构建命令的初始部分，引入 stdbuf 以强制 stdout/stderr 行缓冲。
+    command_parts = ["stdbuf", "-oL", "-eL", shlex.quote(python_bin or "python3"), shlex.quote(entry_path)]
     # 定义常见参数与命令行选项的映射表。
     flag_map = {
         "input_dir": "--input",
@@ -126,6 +127,7 @@ def run_asr_job(
         cmd=command,
         session=tmux_session,
         log_file=log_file,
+        project_dir=project_dir,
         keyfile=keyfile,
         env_vars=env_vars,
     )
