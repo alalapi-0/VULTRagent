@@ -231,7 +231,7 @@ def upload_local_to_remote(
         console.print("[red][file_transfer] 创建远端目录失败，请检查 SSH 权限。[/red]")
         raise RuntimeError("failed to create remote inputs directory")
     # 根据系统是否存在 rsync 选择上传方式。
-    rsync_path = shutil.which("rsync")
+    rsync_path = shutil.which("rsync") or os.environ.get("RSYNC_PATH")
     # 统一构造远端目标字符串，确保以斜杠结尾表示目录。
     remote_target = f"{user}@{host}:{remote_inputs_dir.rstrip('/')}/"
     # 构造 SSH 选项字符串，用于 rsync -e 传递。
@@ -427,7 +427,7 @@ def download_with_retry(
     # 确保本地目录存在，允许幂等调用。
     destination.mkdir(parents=True, exist_ok=True)
     # 获取 rsync 可执行文件路径以决定是否可用。
-    rsync_path = shutil.which("rsync")
+    rsync_path = shutil.which("rsync") or os.environ.get("RSYNC_PATH")
     # 当提供 preserve 列表时，表示需要在降级模式下保留特定文件（例如清单文件）。
     preserve_set = set(preserve or [])
     # 构建远端目标字符串，末尾保留斜杠以复制目录内容。

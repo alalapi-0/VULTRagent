@@ -12,11 +12,108 @@ import shutil
 import subprocess
 # 导入 pathlib.Path 用于跨平台处理本地路径。
 from pathlib import Path
+# 导入 typing 中的 Iterable 与 Optional，以实现更健壮的路径检测逻辑。
+from typing import Iterable, Optional
 # 从 core.remote_exec 模块导入 install_remote_rsync 以便其他模块可直接复用。
 from core.remote_exec import install_remote_rsync
 
 # 定义 cwRsync 的官方下载地址，用于在 Windows 环境下自动拉取 rsync。
 _CWRSYNC_ZIP_URL = "https://www.itefix.net/dl/cwRsync_6.2.1_x64_free.zip"
+
+
+def _iter_clean_path_entries() -> Iterable[Path]:
+    """迭代清洗后的 PATH 项，移除多余的引号并去重。"""
+
+    path_value = os.environ.get("PATH", "")
+    seen: set[str] = set()
+    for raw_entry in path_value.split(os.pathsep):
+        clean_entry = raw_entry.strip().strip('"')
+        if not clean_entry or clean_entry in seen:
+            continue
+        seen.add(clean_entry)
+        yield Path(clean_entry)
+
+
+def _prepend_to_path(directory: Path) -> None:
+    """确保 directory 位于 PATH 最前端，避免 cmd 找不到 rsync。"""
+
+    directory_str = str(directory)
+    existing_entries = [entry for entry in _iter_clean_path_entries()]
+    new_entries: list[str] = [directory_str]
+    for entry in existing_entries:
+        entry_str = str(entry)
+        if entry_str == directory_str:
+            continue
+        new_entries.append(entry_str)
+    os.environ["PATH"] = os.pathsep.join(new_entries)
+
+
+def _register_rsync_path(rsync_path: Path) -> None:
+    """记录 rsync 的绝对路径并更新当前进程的 PATH。"""
+
+    os.environ["RSYNC_PATH"] = str(rsync_path)
+    _prepend_to_path(rsync_path.parent)
+
+
+def _common_windows_rsync_locations() -> Iterable[Path]:
+    """罗列 Windows 下 rsync 常见的安装目录。"""
+
+    program_files = os.environ.get("ProgramFiles")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)")
+    local_app = os.environ.get("LOCALAPPDATA")
+    candidates: list[Path] = []
+
+    def _extend(root: Optional[str], *parts: str) -> None:
+        if not root:
+            return
+        candidates.append(Path(root, *parts))
+
+    _extend(program_files, "Git", "usr", "bin", "rsync.exe")
+    _extend(program_files_x86, "Git", "usr", "bin", "rsync.exe")
+    _extend(program_files, "cwRsync", "bin", "rsync.exe")
+    _extend(program_files_x86, "cwRsync", "bin", "rsync.exe")
+    _extend(local_app, "Programs", "Git", "usr", "bin", "rsync.exe")
+
+    home = Path.home()
+    candidates.extend(
+        [
+            home / "cwrsync" / "bin" / "rsync.exe",
+            Path("C:/cwrsync/bin/rsync.exe"),
+            Path("C:/Program Files/Git/usr/bin/rsync.exe"),
+            Path("C:/Program Files (x86)/Git/usr/bin/rsync.exe"),
+        ]
+    )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        yield candidate
+
+
+def _resolve_rsync_path() -> Optional[Path]:
+    """综合 PATH 与常见目录，尽力定位可用的 rsync。"""
+
+    detected = shutil.which("rsync")
+    if detected:
+        rsync_path = Path(detected)
+        _register_rsync_path(rsync_path)
+        return rsync_path
+
+    if os.name == "nt":
+        exe_name = "rsync.exe"
+        for entry in _iter_clean_path_entries():
+            candidate = entry / exe_name
+            if candidate.exists():
+                _register_rsync_path(candidate)
+                return candidate
+        for candidate in _common_windows_rsync_locations():
+            if candidate.exists():
+                _register_rsync_path(candidate)
+                return candidate
+
+    return None
 
 
 def _run_commands(commands):
@@ -55,10 +152,8 @@ def _ensure_windows_rsync_via_cmd() -> bool:
         existing = None
 
     if existing:
-        os.environ["PATH"] = (
-            f"{existing.parent}{os.pathsep}{os.environ.get('PATH', '')}"
-        )
-        if shutil.which("rsync"):
+        _register_rsync_path(existing)
+        if _resolve_rsync_path():
             print(f"[OK] 已检测到本地 cwRsync：{existing.parent}")
             return True
 
@@ -92,10 +187,8 @@ def _ensure_windows_rsync_via_cmd() -> bool:
         print("[FAIL] 下载完成后仍未找到 rsync.exe，请检查网络或手动安装。")
         return False
 
-    os.environ["PATH"] = (
-        f"{rsync_exe.parent}{os.pathsep}{os.environ.get('PATH', '')}"
-    )
-    detected = shutil.which("rsync")
+    _register_rsync_path(rsync_exe)
+    detected = _resolve_rsync_path()
     if detected:
         print(f"[OK] 已通过 cwRsync 安装 rsync：{detected}")
         print(
@@ -134,7 +227,7 @@ def _install_windows_rsync_via_package_managers() -> bool:
         print(f"[INFO] 检测到 {name}，尝试安装 rsync …")
         if not _run_commands(commands):
             continue
-        if shutil.which("rsync"):
+        if _resolve_rsync_path():
             print(f"[OK] 已通过 {name} 安装 rsync。")
             return True
         print(f"[WARN] 使用 {name} 安装后仍未在 PATH 中找到 rsync。")
@@ -194,7 +287,7 @@ def _install_unix_rsync_automatically() -> bool:
         print(f"[INFO] 检测到包管理器 {name}，尝试安装 rsync …")
         if not _run_commands(commands):
             continue
-        if shutil.which("rsync"):
+        if _resolve_rsync_path():
             print(f"[OK] 已通过 {name} 安装 rsync。")
             return True
         print(f"[WARN] 使用 {name} 安装后仍未在 PATH 中找到 rsync。")
@@ -211,13 +304,15 @@ def ensure_local_rsync(interactive: bool = True) -> bool:
         bool: 若最终存在可用的 rsync 命令则返回 True，否则为 False。
     """
 
-    # 使用 shutil.which 查找 rsync 可执行文件路径。
-    rsync_path = shutil.which("rsync")
+    # 使用 _resolve_rsync_path 查找 rsync 可执行文件路径，并自动修正 PATH。
+    rsync_path = _resolve_rsync_path()
     # 如果找到了路径，则尝试输出版本信息。
     if rsync_path:
         try:
             # 调用 rsync --version 并截取第一行以展示核心版本号。
-            version_output = subprocess.check_output(["rsync", "--version"], text=True)
+            version_output = subprocess.check_output(
+                [str(rsync_path), "--version"], text=True
+            )
             version_line = version_output.splitlines()[0]
             print(f"[OK] 本地 rsync 已安装: {version_line}")
         except Exception:

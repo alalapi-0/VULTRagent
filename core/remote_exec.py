@@ -473,7 +473,8 @@ def tail_and_mirror_log(
     # 输出路径摘要，帮助用户定位本地日志。
     print(f"[remote_exec] 📁 本地日志将保存到 {local_log_path}。")
     # 检测本地是否安装 rsync，用于决定是否启用镜像线程。
-    rsync_available = shutil.which("rsync") is not None
+    rsync_path = shutil.which("rsync") or os.environ.get("RSYNC_PATH")
+    rsync_available = rsync_path is not None
     if not rsync_available:
         # 若 rsync 不可用，则给出安装提示并说明降级行为。
         system_name = platform.system().lower()
@@ -490,7 +491,7 @@ def tail_and_mirror_log(
         ssh_transport = f"ssh -i {shlex.quote(keyfile)}"
     # 组装 rsync 命令列表，便于后续重复调用。
     rsync_cmd = [
-        "rsync",
+        rsync_path or "rsync",
         "-avz",
         "--progress",
         "-e",
