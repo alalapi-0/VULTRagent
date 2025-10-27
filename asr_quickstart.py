@@ -85,6 +85,7 @@ def run(
     output_dir: Path = typer.Option(
         Path("./outputs"),
         "--output",
+        "--out-dir",
         help="目录路径，用于存放识别结果。",
     ),
     models_dir: Path = typer.Option(
