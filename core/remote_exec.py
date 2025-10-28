@@ -39,57 +39,35 @@ def _remote_command_available(ssh_args: Sequence[str], command: str) -> bool:
     return result.returncode == 0
 
 
-def _attempt_remote_install(ssh_args: Sequence[str]) -> bool:
+def _attempt_remote_install(host: str, user: str, keyfile: Optional[str]) -> bool:
     """尝试使用常见包管理器在远端安装 rsync。"""
+
+    ssh_args = list(_base_ssh_args(host, user, keyfile))
 
     install_sequences = [
         (
             "apt",
-            [
-                "bash",
-                "-lc",
-                "sudo apt update -y && sudo apt install -y rsync",
-            ],
+            "bash -lc \"sudo apt update -y && sudo apt install -y rsync\"",
         ),
         (
             "apt-get",
-            [
-                "bash",
-                "-lc",
-                "sudo apt-get update -y && sudo apt-get install -y rsync",
-            ],
+            "bash -lc \"sudo apt-get update -y && sudo apt-get install -y rsync\"",
         ),
         (
             "yum",
-            [
-                "bash",
-                "-lc",
-                "sudo yum install -y rsync",
-            ],
+            "bash -lc \"sudo yum install -y rsync\"",
         ),
         (
             "dnf",
-            [
-                "bash",
-                "-lc",
-                "sudo dnf install -y rsync",
-            ],
+            "bash -lc \"sudo dnf install -y rsync\"",
         ),
         (
             "pacman",
-            [
-                "bash",
-                "-lc",
-                "sudo pacman -Sy --noconfirm rsync",
-            ],
+            "bash -lc \"sudo pacman -Sy --noconfirm rsync\"",
         ),
         (
             "apk",
-            [
-                "bash",
-                "-lc",
-                "sudo apk add rsync",
-            ],
+            "bash -lc \"sudo apk add rsync\"",
         ),
     ]
 
@@ -98,12 +76,21 @@ def _attempt_remote_install(ssh_args: Sequence[str]) -> bool:
             continue
         print(f"[INSTALL] 检测到远端包管理器 {manager}，尝试安装 rsync …")
         try:
-            subprocess.run(list(ssh_args) + install_cmd, check=True)
-        except subprocess.CalledProcessError as exc:
-            print(f"[FAIL] 通过 {manager} 安装 rsync 失败，返回码 {exc.returncode}。")
-            continue
+            print(f"[INSTALL] ▶ {install_cmd}")
+            result = run_ssh_command(
+                host=host,
+                user=user,
+                keyfile=keyfile,
+                command=install_cmd,
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"[ERROR] 执行 {manager} 安装命令时出错：{exc}")
+            continue
+
+        if result.returncode != 0:
+            print(
+                f"[FAIL] 通过 {manager} 安装 rsync 失败，返回码 {result.returncode}。"
+            )
             continue
 
         if _remote_command_available(ssh_args, "rsync"):
@@ -136,12 +123,7 @@ def install_remote_rsync(user: str, host: str, keyfile: Optional[str] = None) ->
         return False
 
     # 构建 ssh 基础参数列表，后续命令在此基础上附加远端指令。
-    ssh_args = ["ssh"]
-    # 当提供私钥路径时添加 -i 参数。
-    if keyfile:
-        ssh_args.extend(["-i", keyfile])
-    # 拼接目标主机字符串。
-    ssh_args.append(f"{user}@{host}")
+    ssh_args = list(_base_ssh_args(host, user, keyfile))
 
     # 打印检测提示，保持与其它日志格式一致。
     print("[CHECK] 正在检测远端 rsync ...")
@@ -159,7 +141,7 @@ def install_remote_rsync(user: str, host: str, keyfile: Optional[str] = None) ->
 
     print("[WARN] 远端未检测到 rsync，尝试自动安装 …")
 
-    if _attempt_remote_install(ssh_args):
+    if _attempt_remote_install(host, user, keyfile):
         return True
 
     print("[FAIL] 已尝试所有自动方案，仍未能在远端安装 rsync。")
