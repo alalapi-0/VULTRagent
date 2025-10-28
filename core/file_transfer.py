@@ -35,6 +35,13 @@ from core.remote_exec import run_ssh_command
 console = Console()
 
 
+# 当本地 rsync 在特定环境（例如 Windows/MSYS 组合）中无法正确识别
+# 目标路径时，会不断返回 "Unexpected remote arg" 的语法错误。为了避免
+# 在同一次运行中重复触发同样的错误，这里记录一个模块级标记，一旦
+# 检测到这类问题，后续的下载流程将直接跳过 rsync，改用 scp 兜底。
+_RSYNC_UNUSABLE = False
+
+
 # 定义一个辅助函数，用于在本地更新 ASR 仓库以保持最新状态。
 def update_local_repo(local_dir: str, branch: str) -> Dict[str, object]:
     """Update the local ASR repository before deploying to the remote host."""
@@ -574,7 +581,18 @@ def _run_rsync_download(
     # 输出命令摘要帮助用户调试。
     console.print(f"[cyan][file_transfer] 执行命令：{' '.join(rsync_args)}[/cyan]")
     # 执行 rsync 并在失败时抛出异常。
-    subprocess.run(rsync_args, check=True)
+    proc = subprocess.run(
+        rsync_args,
+        check=False,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            rsync_args,
+            stderr=proc.stderr,
+        )
 
 
 # 定义一个内部函数用于执行单次 scp 下载。
@@ -624,12 +642,15 @@ def download_with_retry(
     backoff_sec: int = 3,
     preserve: Optional[List[str]] = None,
 ) -> None:
+    global _RSYNC_UNUSABLE
     # 将本地目录转换为 Path 对象并创建。
     destination = Path(local_dir).expanduser().resolve()
     # 确保本地目录存在，允许幂等调用。
     destination.mkdir(parents=True, exist_ok=True)
     # 获取 rsync 可执行文件路径以决定是否可用。
     rsync_path = shutil.which("rsync") or os.environ.get("RSYNC_PATH")
+    if _RSYNC_UNUSABLE:
+        rsync_path = None
     # 当提供 preserve 列表时，表示需要在降级模式下保留特定文件（例如清单文件）。
     preserve_set = set(preserve or [])
     # 构建远端目标字符串，末尾保留斜杠以复制目录内容。
@@ -667,13 +688,32 @@ def download_with_retry(
                 console.print(
                     "[green][file_transfer] 使用 rsync 同步远端结果目录。[/green]"
                 )
-                _run_rsync_download(
-                    rsync_path=rsync_path,
-                    ssh_command=ssh_command,
-                    remote_target=remote_target,
-                    local_dir=destination,
-                    pattern=pattern,
-                )
+                try:
+                    _run_rsync_download(
+                        rsync_path=rsync_path,
+                        ssh_command=ssh_command,
+                        remote_target=remote_target,
+                        local_dir=destination,
+                        pattern=pattern,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    error_text = exc.stderr or ""
+                    lowered = error_text.lower()
+                    if "unexpected remote arg" in lowered or "cannot both be remote" in lowered:
+                        console.print(
+                            "[yellow][file_transfer] rsync 将本地目录误判为远端参数，已自动降级为 scp。[/yellow]"
+                        )
+                        _RSYNC_UNUSABLE = True
+                        rsync_path = None
+                        _run_scp_download(
+                            user=user,
+                            host=host,
+                            remote_dir=remote_dir,
+                            local_dir=destination,
+                            keyfile=keyfile,
+                        )
+                    else:
+                        raise
             else:
                 # 若未检测到 rsync，则降级使用 scp。
                 console.print(
