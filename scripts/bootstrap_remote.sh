@@ -35,17 +35,31 @@ REQUIRED_PACKAGES=(
 # 允许通过环境变量覆盖包管理器命令，默认使用 apt-get。
 PKG_MANAGER_COMMAND=${PKG_MANAGER_COMMAND:-"apt-get"}
 
-# 如果系统存在 sudo 并且当前命令非 root，则自动在前面加上 sudo。
+# 如果系统存在 sudo 并且当前命令非 root，则自动在前面加上 sudo -E。
 if command -v sudo >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ]; then
-  # 通过 sudo 执行包管理器命令以获得必要权限。
-  PKG_MANAGER_COMMAND="sudo ${PKG_MANAGER_COMMAND}"
+  # 通过 sudo -E 执行包管理器命令以获得必要权限并保留环境变量。
+  PKG_MANAGER_COMMAND="sudo -E ${PKG_MANAGER_COMMAND}"
 fi
 
-# 更新包索引，确保后续安装能够获取最新的软件版本。
-DEBIAN_FRONTEND=noninteractive eval "$PKG_MANAGER_COMMAND update -y"
+# 将包管理器命令拆分为数组，方便追加参数。
+read -r -a PKG_MANAGER_PARTS <<<"${PKG_MANAGER_COMMAND}"
 
-# 安装所需依赖软件包，若已安装则该命令不会破坏系统状态。
-DEBIAN_FRONTEND=noninteractive eval "$PKG_MANAGER_COMMAND install -y ${REQUIRED_PACKAGES[*]}"
+# 记录基础命令（去除 sudo 之后的包管理器名），用于判定是否为 apt 系列。
+PKG_MANAGER_BIN="${PKG_MANAGER_PARTS[-1]}"
+
+# 在需要时向命令注入非交互环境变量。
+export DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}
+
+# 构建更新命令：apt/apt-get 不需要 -y，其他包管理器保留 -y 以避免交互。
+UPDATE_CMD=("${PKG_MANAGER_PARTS[@]}" update)
+if [[ ! "${PKG_MANAGER_BIN}" =~ ^apt(-get)?$ ]]; then
+  UPDATE_CMD+=("-y")
+fi
+"${UPDATE_CMD[@]}"
+
+# 构建安装命令，默认追加 -y 确保非交互。
+INSTALL_CMD=("${PKG_MANAGER_PARTS[@]}" install "-y" "${REQUIRED_PACKAGES[@]}")
+"${INSTALL_CMD[@]}"
 
 # 初始化 git lfs，以确保仓库能够正确处理大文件。
 git lfs install >/dev/null 2>&1 || true

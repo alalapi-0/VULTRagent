@@ -47,11 +47,11 @@ def _attempt_remote_install(host: str, user: str, keyfile: Optional[str]) -> boo
     install_sequences = [
         (
             "apt",
-            "bash -lc \"sudo apt update -y && sudo apt install -y rsync\"",
+            "bash -lc \"sudo apt update && sudo apt install -y rsync\"",
         ),
         (
             "apt-get",
-            "bash -lc \"sudo apt-get update -y && sudo apt-get install -y rsync\"",
+            "bash -lc \"sudo apt-get update && sudo apt-get install -y rsync\"",
         ),
         (
             "yum",
