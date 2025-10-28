@@ -55,6 +55,7 @@ from core.file_transfer import (
     make_local_results_dir,
     rotate_remote_log,
     cleanup_remote_outputs,
+    update_local_repo,
 )
 # 从 core.remote_bootstrap 模块导入远端部署与报告函数。
 from core.remote_bootstrap import upload_and_bootstrap, print_health_report
@@ -647,6 +648,7 @@ def handle_deploy_repo(config: Dict) -> None:
         prefer_https = prefer_https_raw.strip().lower() in {"1", "true", "yes", "on"}
     else:
         prefer_https = bool(prefer_https_raw)
+    local_repo_dir = git_conf.get("local_repo_dir", "")
     # 校验仓库地址是否配置。
     if not repo_url:
         console.print("[red]配置文件缺少 git.repo_url，无法执行部署。[/red]")
@@ -655,6 +657,19 @@ def handle_deploy_repo(config: Dict) -> None:
     if not branch:
         console.print("[red]配置文件缺少 git.branch，无法执行部署。[/red]")
         return
+    # 在部署前先尝试更新本地仓库，确保远端获取最新代码。
+    if local_repo_dir:
+        local_update = update_local_repo(local_repo_dir, branch)
+        if not local_update.get("ok"):
+            console.print("[red]本地仓库更新失败，已终止远端部署。[/red]")
+            messages = local_update.get("messages") or []
+            if messages:
+                console.print("[blue]故障详情：[/blue]")
+                console.print(json.dumps(messages, ensure_ascii=False, indent=2))
+            return
+        console.print(
+            "[green]✅ 本地仓库已更新，可继续部署到远端。[/green]"
+        )
     # 读取远端项目目录。
     remote_conf = config.get("remote", {}) if config else {}
     project_dir = remote_conf.get("project_dir", "")
