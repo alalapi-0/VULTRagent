@@ -10,10 +10,12 @@ import platform
 import shutil
 # 导入 subprocess 模块用于执行系统安装命令。
 import subprocess
+# 导入 socket 模块用于检测端口连通性。
+import socket
 # 导入 pathlib.Path 用于跨平台处理本地路径。
 from pathlib import Path
 # 导入 typing 中的 Iterable 与 Optional，以实现更健壮的路径检测逻辑。
-from typing import Iterable, Optional, TYPE_CHECKING
+from typing import Dict, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型检查，避免循环依赖。
     from core.remote_exec import install_remote_rsync as _install_remote_rsync
@@ -129,6 +131,96 @@ def detect_local_rsync() -> Optional[Path]:
     """返回可用的 rsync 路径，未找到时返回 ``None``。"""
 
     return _resolve_rsync_path()
+
+
+def diagnose_local_ssh_environment(host: str, port: int = 22, timeout: float = 3.0) -> Dict[str, str]:
+    """收集与 SSH 连通性相关的本地环境信息。"""
+
+    # 初始化结果字典，存储主机、端口和平台等基础信息。
+    info: Dict[str, str] = {
+        "host": host,
+        "port": str(port),
+        "platform": platform.system(),
+    }
+    # 预设端口连通性状态为 unknown，后续根据检测结果更新。
+    info["port_reachability"] = "unknown"
+    try:
+        # 尝试在限定超时时间内建立 TCP 连接以检测端口连通性。
+        with socket.create_connection((host, port), timeout=timeout):
+            info["port_reachability"] = "reachable"
+    except socket.timeout:
+        # 当连接超时时记录 timeout，表示目标主机未响应。
+        info["port_reachability"] = "timeout"
+    except OSError as exc:
+        # 捕获其他网络错误并记录详细信息便于后续分析。
+        info["port_reachability"] = f"error:{exc.__class__.__name__}"
+        info["port_error_detail"] = str(exc)
+    # 根据不同平台选择合适的防火墙状态检测策略。
+    system_name = platform.system().lower()
+    if system_name == "linux":
+        # 当系统为 Linux 时优先检测 ufw 工具是否可用。
+        if shutil.which("ufw"):
+            info["firewall_tool"] = "ufw"
+            # 构建候选命令列表，先尝试以 sudo -n 静默获取状态。
+            commands = [
+                ["sudo", "-n", "ufw", "status"],
+                ["ufw", "status"],
+            ]
+            for command in commands:
+                try:
+                    result = subprocess.run(command, capture_output=True, text=True, check=False)
+                except Exception as exc:  # noqa: BLE001 - 需要捕获所有异常输出错误
+                    info["firewall_status"] = f"执行 {' '.join(command)} 失败：{exc}"
+                    continue
+                output = result.stdout.strip() or result.stderr.strip()
+                if output:
+                    info["firewall_status"] = output
+                else:
+                    info["firewall_status"] = f"ufw status exit_code={result.returncode}"
+                break
+        else:
+            info["firewall_tool"] = "none"
+    elif system_name == "windows":
+        # 在 Windows 环境中通过 netsh 查询防火墙状态。
+        if shutil.which("netsh"):
+            info["firewall_tool"] = "netsh"
+            try:
+                result = subprocess.run(
+                    ["netsh", "advfirewall", "show", "currentprofile"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - 捕获所有异常以供诊断
+                info["firewall_status"] = f"netsh 调用失败：{exc}"
+            else:
+                output = result.stdout.strip() or result.stderr.strip()
+                info["firewall_status"] = output or f"netsh exit_code={result.returncode}"
+        else:
+            info["firewall_tool"] = "none"
+    elif system_name == "darwin":
+        # macOS 默认启用 pf，使用 pfctl -s info 获取简要状态。
+        if shutil.which("pfctl"):
+            info["firewall_tool"] = "pfctl"
+            try:
+                result = subprocess.run(
+                    ["sudo", "-n", "pfctl", "-s", "info"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - 捕获所有异常信息
+                info["firewall_status"] = f"pfctl 调用失败：{exc}"
+            else:
+                output = result.stdout.strip() or result.stderr.strip()
+                info["firewall_status"] = output or f"pfctl exit_code={result.returncode}"
+        else:
+            info["firewall_tool"] = "none"
+    else:
+        # 对于未覆盖的平台仅记录未检测防火墙。
+        info["firewall_tool"] = "unknown"
+    # 返回收集到的诊断信息字典。
+    return info
 
 
 def _run_commands(commands):

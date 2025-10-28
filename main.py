@@ -42,6 +42,7 @@ from core.remote_exec import (
     stop_tmux_session,
     has_tmux_session,
     install_remote_rsync,
+    check_ssh_connection,
 )
 # 从 core.env_check 模块导入本地 rsync 检测函数。
 from core.env_check import ensure_local_rsync
@@ -532,6 +533,77 @@ def handle_test_ssh(config: Dict) -> None:
     else:
         console.print(f"[red]❌ SSH 测试失败，返回码 {result.returncode}。[/red]")
         console.print("[yellow]请检查 IP、用户名、私钥路径以及安全组设置后重试。[/yellow]")
+
+
+def handle_diagnose_ssh(config: Dict) -> None:
+    """通过核心模块执行 SSH 连通性诊断并输出日志路径。"""
+
+    # 若配置未加载，则无法获取 SSH 连接信息。
+    if not config:
+        console.print("[red]未加载配置文件，无法执行 SSH 诊断。[/red]")
+        return
+
+    # 从配置文件中读取 ssh 段落以获取用户、端口和密钥。
+    ssh_conf = config.get("ssh", {}) if config else {}
+    ssh_user = ssh_conf.get("user", "")
+    if not ssh_user:
+        console.print("[red]配置文件缺少 ssh.user，请补全后再试。[/red]")
+        return
+
+    # 解析端口设置，兼容字符串与整数形式，默认为 22。
+    ssh_port_raw = ssh_conf.get("port", 22)
+    try:
+        ssh_port = int(ssh_port_raw)
+    except (TypeError, ValueError):
+        ssh_port = 22
+
+    # 解析私钥路径并展开 ~，若留空则表示使用默认凭据。
+    ssh_key = ssh_conf.get("keyfile", "")
+    ssh_key_path = str(Path(ssh_key).expanduser()) if ssh_key else ""
+
+    # 尝试从 .state.json 中读取最近选择的实例 IP。
+    try:
+        state = load_state()
+    except FileNotFoundError:
+        state = {}
+    except json.JSONDecodeError:
+        console.print("[red].state.json 内容无效，请重新选择实例。[/red]")
+        return
+
+    target_host = state.get("ip", "") if state else ""
+    host_source = ".state.json" if target_host else ""
+
+    # 若状态文件缺少 IP，则回退到配置文件的 ssh.host。
+    if not target_host:
+        target_host = ssh_conf.get("host", "")
+        if target_host:
+            host_source = "配置文件 ssh.host"
+
+    # 两个来源都缺失时无法诊断，提示用户补全信息。
+    if not target_host:
+        console.print(
+            "[red]无法确定 SSH 目标主机。请先使用菜单 2 保存实例，或在 config.yaml 中配置 ssh.host。[/red]"
+        )
+        return
+
+    # 输出诊断概要，包含主机、端口以及来源说明。
+    source_display = host_source or "未知"
+    console.print(
+        f"[blue]正在执行 SSH 连通性诊断：{ssh_user}@{target_host}:{ssh_port}（来源：{source_display}）[/blue]"
+    )
+    if ssh_key_path:
+        console.print(f"[blue]使用私钥：{ssh_key_path}[/blue]")
+
+    # 调用核心函数执行诊断，并在结束后展示日志位置。
+    result = check_ssh_connection(
+        user=ssh_user,
+        host=target_host,
+        port=ssh_port,
+        keyfile=ssh_key_path or None,
+    )
+    log_file = result.get("log_file") if isinstance(result, dict) else ""
+    if log_file:
+        console.print(f"[blue]诊断日志：{log_file}[/blue]")
 
 # 定义运行远端环境部署的函数。
 def handle_remote_bootstrap(config: Dict) -> None:
@@ -1171,6 +1243,7 @@ MENU_ACTIONS: Dict[str, Dict[str, Callable[[Dict], None]]] = {
     "10": {"label": "回传 ASR 结果到本地", "handler": handle_fetch_results},
     "11": {"label": "停止/清理远端任务", "handler": handle_cleanup_remote},
     "12": {"label": "退出", "handler": lambda config: sys.exit(0)},  # 使用匿名函数统一出口逻辑。
+    "13": {"label": "诊断远端 SSH 状态", "handler": handle_diagnose_ssh},
 }
 
 # 定义打印菜单的函数。
@@ -1215,6 +1288,14 @@ def interactive_menu() -> None:
             # 如果输入无效则提示用户。
             console.print(f"[red]无效的选项: {choice}，请重新输入。[/red]")
 
+# 定义独立命令以便直接在命令行触发 SSH 诊断。
+@app.command("check-ssh")
+def check_ssh_cli() -> None:
+    # Typer 命令函数，复用交互式菜单中的诊断逻辑。
+    config = load_configuration()
+    handle_diagnose_ssh(config)
+
+
 # 使用 Typer 的命令装饰器将 interactive_menu 暴露为 CLI 命令。
 @app.command()
 def menu() -> None:
@@ -1234,5 +1315,11 @@ if __name__ == "__main__":
         # 直接调用交互式菜单。
         interactive_menu()
     else:
-        # 若带有参数则交由 Typer 处理，保持灵活性。
-        app()
+        # 优先识别 --check-ssh 标志，以便兼容 README 提供的快速诊断命令。
+        if "--check-ssh" in sys.argv:
+            # 直接加载配置并执行诊断逻辑，无需进入 Typer 框架。
+            config = load_configuration()
+            handle_diagnose_ssh(config)
+        else:
+            # 其余情况交由 Typer 处理，包括 menu 与 check-ssh 子命令。
+            app()

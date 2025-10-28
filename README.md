@@ -13,15 +13,16 @@ VULTRagent 旨在通过本地命令行工具自动化管理 Vultr VPS，主要�
 1. 列出 Vultr 实例（真实 API 调用，支持分页、耗时统计）
 2. 选择当前实例并保存（写入 `.state.json`）
 3. 查看当前实例详情（实时请求 API）
-4. 连接并测试 SSH（占位）
-5. 上传本地素材到远端输入目录（支持 rsync，自动降级为 scp）
-6. 在 tmux 中后台运行 `asr_quickstart.py`（非交互，支持 Hugging Face 环境变量注入）
-7. 实时查看远端日志（`tail -f` 流式转发，支持 Ctrl+C 退出）
-8. 回传 ASR 结果到本地（支持目录分组、过滤、重试与清单校验）
-9. 停止/清理远端任务（检测 tmux，会话停止、日志轮转与远端 outputs 清理）
-10. 一键环境部署/检查（远端脚本，包含健康检查与 Hugging Face 可选登录）
-11. 部署/更新 ASR 仓库到远端（支持 clone/pull、子模块、git-lfs、入口检查）
+4. 连接并测试 SSH（快速验证登录命令）
+5. 一键环境部署/检查（远端脚本，包含健康检查与 Hugging Face 可选登录）
+6. 部署/更新 ASR 仓库到远端（支持 clone/pull、子模块、git-lfs、入口检查）
+7. 在 tmux 中后台运行 `asr_quickstart.py`（非交互，支持 Hugging Face 环境变量注入）
+8. 上传本地素材到远端输入目录（支持 rsync，自动降级为 scp）
+9. 实时查看远端日志（`tail -f` 流式转发，支持 Ctrl+C 退出）
+10. 回传 ASR 结果到本地（支持目录分组、过滤、重试与清单校验）
+11. 停止/清理远端任务（检测 tmux，会话停止、日志轮转与远端 outputs 清理）
 12. 退出
+13. 诊断远端 SSH 状态（自动收集本地/远端诊断信息）
 
 ## 文件结构与说明
 ```
@@ -34,7 +35,8 @@ VULTRagent/
 │   ├── remote_bootstrap.py  # 远端初始化与健康检查逻辑
 │   └── asr_runner.py        # ASR 命令构建与 tmux 调度封装
 ├── scripts/
-│   └── bootstrap_remote.sh  # 远端一键脚本（幂等部署与健康检查）
+│   ├── bootstrap_remote.sh  # 远端一键脚本（幂等部署与健康检查）
+│   └── ssh_diagnose.sh      # 远端 SSH 诊断脚本
 ├── config.example.yaml      # 配置模板，供用户复制修改
 ├── requirements.txt         # Python 依赖清单
 └── README.md                # 项目说明文档（本文件）
@@ -89,6 +91,24 @@ VULTRagent/
   ```
   整个流程同样会输出详细的 `[CHECK]`、`[INSTALL]`、`[OK]`、`[FAIL]` 日志，并在成功后再次获取远端版本号以确认安装结果。
 - **功能依赖**：`rsync` 是上传、下载以及日志镜像的核心工具。本地与远端任一侧缺失都会导致文件同步能力受限，因此建议首次运行程序时完成上述检查流程。
+
+## 🧩 SSH 连通性检测与自动诊断
+
+- **一键入口**：当出现 SSH 无法连接、提示 `Connection timed out`、`Permission denied` 等错误时，可直接执行：
+  ```bash
+  python main.py --check-ssh
+  ```
+  或在交互式菜单中选择 **13. 诊断远端 SSH 状态**。程序会基于配置文件与 `.state.json` 自动定位目标主机。
+- **智能识别常见错误**：诊断命令会调用 `ssh -v` 捕获完整错误信息，并针对 `Connection timed out`、`Permission denied`、`No route to host`、`Connection refused` 等场景给出逐条修复建议，包括检查 sshd 服务、端口开放、云防火墙以及账户/密钥配置。
+- **本地环境联动**：本地会自动检测端口连通性与常见防火墙状态（如 `ufw`、`netsh` 或 `pfctl`），若检测到阻断会在控制台给予醒目提示，同时将详细数据写入日志。
+- **远端自动诊断**：对于网络相关故障，CLI 会尝试通过 SSH 触发远端脚本 `scripts/ssh_diagnose.sh`，自动收集 sshd 运行状态、端口监听、`ufw` 状态、关键配置项以及公网 IP，帮助快速定位问题。
+- **日志归档**：所有检测输出都会落盘到 `logs/ssh_check_<YYYYMMDD_HHMMSS>.log`，包含原始 `ssh -v` 日志、本地环境信息以及远端脚本输出，便于后续排查或提交工单。
+- **常见排障提示**：若诊断输出 `Connection timed out`，请依次确认：
+  1. 远端是否修改了 SSH 端口或关闭了服务（`sudo systemctl restart ssh`）。
+  2. 系统防火墙是否放行 22 端口（`sudo ufw allow 22/tcp && sudo ufw reload`）。
+  3. Vultr Firewall Group 中是否允许 SSH 入站。
+  4. 本地网络环境是否屏蔽 22 端口（必要时可改用手机热点测试）。
+  5. `.state.json` 与配置文件中的主机/端口是否与实际一致。
 
 ## 配置与环境变量
 - `VULTR_API_KEY`：必须设置，用于通过 Vultr API 进行身份验证。建议使用环境变量而非写入代码；Windows 可使用 `setx` 永久写入，Linux/macOS 推荐在 `~/.bashrc` 或 `~/.zshrc` 中 export。
