@@ -6,6 +6,7 @@ import json
 import os
 # 导入 shlex 模块以确保在构建 shell 命令时进行安全转义。
 import shlex
+import sys
 # 导入 subprocess 模块以执行本地外部命令（rsync 或 scp）。
 import subprocess
 # 导入 shutil 模块以检测 rsync 是否可用。
@@ -109,6 +110,25 @@ def ensure_remote_io_dirs(
 def _quote(value: str) -> str:
     # 通过 shlex.quote 处理可能包含空格或特殊字符的值。
     return shlex.quote(value)
+
+
+# 定义一个辅助函数，在 Windows 平台上将本地路径转换为 rsync 可识别的 /cygdrive 形式。
+def _format_local_path_for_rsync(local_dir: Path) -> str:
+    """返回适用于 rsync 的本地路径表示，兼容 Windows/msys 环境。"""
+
+    path_str = str(local_dir)
+    # 仅在 Windows 平台上尝试转换盘符路径。
+    if sys.platform.startswith("win"):
+        normalized = path_str.replace("\\", "/")
+        # 匹配形如 C:/path 或 C: 后紧跟目录的写法。
+        if len(normalized) >= 2 and normalized[1] == ":":
+            drive_letter = normalized[0].lower()
+            remainder = normalized[2:].lstrip("/")
+            cygdrive_path = f"/cygdrive/{drive_letter}"
+            if remainder:
+                cygdrive_path = f"{cygdrive_path}/{remainder}"
+            return cygdrive_path
+    return path_str
 
 
 # 定义一个辅助函数，用于构造带 bash -lc 的远端命令并执行。
@@ -324,7 +344,7 @@ def upload_local_to_remote(
             "--progress",
             "-e",
             ssh_command,
-            f"{str(local_dir)}/",
+            f"{_format_local_path_for_rsync(local_dir)}/",
             remote_target,
         ]
         # 输出命令摘要以便用户复现，密钥路径不会包含敏感信息。
