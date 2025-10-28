@@ -15,16 +15,263 @@ import subprocess
 import threading
 # 导入 time 模块用于线程休眠控制。
 import time
+# 导入 re 模块用于解析 ssh 输出中的错误关键字。
+import re
 # 导入 datetime.datetime 用于创建时间戳目录。
 from datetime import datetime
 # 导入 pathlib.Path 以便跨平台构建路径。
 from pathlib import Path
 # 导入 shlex 模块用于在记录日志时安全拼接命令。
 import shlex
-# 导入 typing 模块中的 Dict、Optional、Sequence 类型用于类型注解。
-from typing import Dict, Optional, Sequence
+# 导入 typing 模块中的 Dict、Optional、Sequence、Tuple 类型用于类型注解。
+from typing import Dict, Optional, Sequence, Tuple
 
-from core.env_check import detect_local_rsync
+from core.env_check import detect_local_rsync, diagnose_local_ssh_environment
+
+# 定义一个常量，指向远端诊断脚本的默认路径。
+_REMOTE_DIAGNOSE_SCRIPT = "/home/ubuntu/vultragentsvc/scripts/ssh_diagnose.sh"
+
+
+def _write_log_section(log_file: Path, title: str, content: str) -> None:
+    """在日志文件中追加带标题的内容段落。"""
+
+    # 以追加模式打开日志文件，确保多次写入不会覆盖之前内容。
+    with log_file.open("a", encoding="utf-8") as handle:
+        # 写入段落标题，统一使用 === 标记方便阅读。
+        handle.write(f"=== {title} ===\n")
+        # 如果内容非空，则原样写入日志文件。
+        if content:
+            handle.write(content)
+            # 如果内容末尾缺少换行，则补齐一行避免下一段粘连。
+            if not content.endswith("\n"):
+                handle.write("\n")
+        # 在段落末尾额外补充空行以增强可读性。
+        handle.write("\n")
+
+
+def _classify_ssh_error(output: str) -> Tuple[str, str]:
+    """根据 ssh 输出识别错误类型并返回匹配到的关键短语。"""
+
+    # 定义常见错误关键字与对应的错误标签。
+    patterns = [
+        ("timeout", r"Connection timed out"),
+        ("permission", r"Permission denied"),
+        ("noroute", r"No route to host"),
+        ("refused", r"Connection refused"),
+        ("hostkey", r"Host key verification failed"),
+        ("network_unreachable", r"Network is unreachable"),
+    ]
+    # 遍历关键字列表，找到首个匹配的错误标签。
+    for label, pattern in patterns:
+        if re.search(pattern, output, re.IGNORECASE):
+            return label, pattern
+    # 未匹配到任何已知错误时返回 unknown 标签。
+    return "unknown", ""
+
+
+def _run_remote_diagnose(
+    user: str,
+    host: str,
+    port: int,
+    keyfile: Optional[str],
+    script_path: str,
+    log_file: Path,
+) -> Dict[str, str]:
+    """尝试通过 SSH 调用远端诊断脚本并记录输出。"""
+
+    # 组装基础 ssh 命令参数，启用 BatchMode 避免交互式输入。
+    ssh_args = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-p",
+        str(port),
+    ]
+    # 当提供了私钥文件时，将其加入 ssh 参数。
+    if keyfile:
+        ssh_args.extend(["-i", keyfile])
+    # 组合目标地址字符串，保持与其它函数一致的 user@host 形式。
+    ssh_args.append(f"{user}@{host}")
+    # 使用 bash 调用远端脚本，同时保证路径中的特殊字符得到转义。
+    remote_command = f"bash {shlex.quote(script_path)}"
+    ssh_args.append(remote_command)
+    # 在日志中记录即将执行的诊断命令，帮助用户回溯问题。
+    _write_log_section(
+        log_file,
+        "remote_diagnose_command",
+        " ".join(shlex.quote(part) for part in ssh_args),
+    )
+    try:
+        # 执行 ssh 命令并捕获标准输出与错误输出。
+        proc = subprocess.run(ssh_args, capture_output=True, text=True, timeout=120)
+    except Exception as exc:  # noqa: BLE001 - 需捕获所有异常用于提示
+        # 当命令执行失败时记录异常信息，便于分析根因。
+        failure_message = f"调用远端诊断脚本失败：{exc}"
+        _write_log_section(log_file, "remote_diagnose_error", failure_message)
+        # 返回执行失败的摘要信息给上层调用者。
+        return {
+            "ran": "false",
+            "returncode": "",
+            "error": failure_message,
+            "output": "",
+        }
+    # 合并 stdout 与 stderr 便于统一写入日志。
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    # 将命令输出写入日志文件供用户查阅详情。
+    _write_log_section(log_file, "remote_diagnose_output", combined)
+    # 构造执行结果摘要以供 check_ssh_connection 使用。
+    return {
+        "ran": "true",
+        "returncode": str(proc.returncode),
+        "error": "" if proc.returncode == 0 else "远端诊断脚本返回非零退出码",
+        "output": combined,
+    }
+
+
+def check_ssh_connection(
+    user: str,
+    host: str,
+    port: int = 22,
+    keyfile: Optional[str] = None,
+    timeout: int = 20,
+    remote_script: str = _REMOTE_DIAGNOSE_SCRIPT,
+) -> Dict[str, str]:
+    """测试 SSH 连接状态并根据错误类型给出诊断建议。"""
+
+    # 若缺少主机地址则无法继续诊断，立即返回提示。
+    if not host:
+        print("[remote_exec] ❌ 未提供 SSH 主机地址，无法执行连通性检测。")
+        return {"ok": "false", "reason": "missing_host"}
+    # 若缺少用户名同样无法构建 ssh 目标，需提醒用户补全配置。
+    if not user:
+        print("[remote_exec] ❌ 未提供 SSH 用户名，无法执行连通性检测。")
+        return {"ok": "false", "reason": "missing_user"}
+    # 创建日志目录并生成带时间戳的日志文件名。
+    logs_dir = Path("logs")
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = logs_dir / f"ssh_check_{timestamp}.log"
+    # 初始化日志文件，写入简单的标头以区分不同段落。
+    log_file.write_text("=== ssh_check ===\n\n", encoding="utf-8")
+    # 构建 ssh 命令基础参数，开启详细输出以捕获错误原因。
+    ssh_args = [
+        "ssh",
+        "-v",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        f"ConnectTimeout={timeout}",
+        "-p",
+        str(port),
+    ]
+    # 若提供私钥则追加 -i 参数以指定凭据。
+    if keyfile:
+        ssh_args.extend(["-i", keyfile])
+    # 组合远端目标并附加 exit 命令用于快速验证。
+    ssh_args.append(f"{user}@{host}")
+    ssh_args.append("exit")
+    # 将最终命令写入日志，方便用户复现。
+    _write_log_section(
+        log_file,
+        "ssh_command",
+        " ".join(shlex.quote(part) for part in ssh_args),
+    )
+    # 在控制台告知用户检测目标与端口。
+    print(f"[CHECK] 正在检测 SSH 连接：{user}@{host}:{port}")
+    try:
+        # 运行 ssh 命令并捕获输出内容。
+        proc = subprocess.run(ssh_args, capture_output=True, text=True)
+    except FileNotFoundError:
+        # 当本地缺少 ssh 命令时，提示用户安装并记录日志。
+        message = "本地未找到 ssh 命令，请先安装 OpenSSH 客户端。"
+        print(f"[remote_exec] ❌ {message}")
+        _write_log_section(log_file, "ssh_error", message)
+        print(f"\n📁 详细日志已保存：{log_file}")
+        return {"ok": "false", "reason": "ssh_not_found"}
+    # 将 ssh 输出合并后写入日志文件。
+    combined_output = (proc.stdout or "") + (proc.stderr or "")
+    _write_log_section(log_file, "ssh_output", combined_output)
+    # 使用辅助函数识别错误类型并拿到匹配到的关键短语。
+    error_label, matched_keyword = _classify_ssh_error(combined_output)
+    # 根据返回码判断是否需要输出成功提示。
+    if proc.returncode == 0:
+        print("✅ SSH 检测通过，远端可正常建立连接。")
+    else:
+        # 针对不同错误标签输出个性化的排障建议。
+        if error_label == "timeout":
+            print("\n❌ SSH 连接超时，可能原因如下：")
+            print("  1️⃣ VPS SSH 服务未运行 → 尝试执行：sudo systemctl restart ssh")
+            print("  2️⃣ 防火墙未放行 22 端口 → 运行：sudo ufw allow 22/tcp && sudo ufw reload")
+            print("  3️⃣ 云防火墙未放行 22 → 检查 Vultr Firewall Group 规则。")
+            print("  4️⃣ 本地网络屏蔽 22 → 尝试切换其他网络或手机热点。")
+            print("  5️⃣ SSH 端口被修改 → 检查 /etc/ssh/sshd_config 中的 Port。")
+            print("\n🧩 已自动尝试执行远端诊断脚本，详见日志。")
+        elif error_label == "permission":
+            print("\n⚠️ 登录失败：密钥或用户信息可能不正确。")
+            print("  - 请确认当前使用的用户是否正确（如 ubuntu / root）。")
+            print("  - 请确认私钥与 Vultr 面板中的公钥匹配。")
+            print("  - 若 VPS 禁用 root 登录，尝试改用普通用户。")
+        elif error_label == "noroute":
+            print("\n🚫 无法路由到主机，说明网络不通或路由异常。")
+            print("  - 请检查实例是否正在运行且网络接口已启用。")
+            print("  - 若使用内网 IP，请改用公网 IP。")
+            print("  - 可在 Vultr 控制台确认实例网络状态。")
+            print("\n🧩 已自动尝试执行远端诊断脚本，详见日志。")
+        elif error_label == "refused":
+            print("\n🔒 目标拒绝连接，可能是 SSH 服务未监听指定端口。")
+            print("  - 可执行 sudo systemctl enable --now ssh 恢复服务。")
+            print("  - 请确认 sshd_config 中的 Port 与本次检测端口一致。")
+            print("\n🧩 已自动尝试执行远端诊断脚本，详见日志。")
+        elif error_label == "hostkey":
+            print("\n⚠️ Host key 验证失败，建议清理已缓存的 known_hosts 记录。")
+            print(f"  - 可执行 ssh-keygen -R {host} 然后重试连接。")
+            print("  - 若实例重装后 IP 未变化，需要重新接受新的指纹。")
+        elif error_label == "network_unreachable":
+            print("\n🚫 本地网络不可达目标主机，请检查当前网络环境。")
+            print("  - 可尝试切换到其他网络，或检查本地路由配置。")
+        else:
+            print("\n❌ SSH 检测失败，未识别的错误类型。请查阅日志获取更多细节。")
+        print(f"\n[remote_exec] ssh 返回码：{proc.returncode}，匹配关键字：{matched_keyword or '无'}")
+    # 调用环境检测函数收集本地端口与防火墙信息。
+    local_env = diagnose_local_ssh_environment(host=host, port=port)
+    # 将环境信息写入日志以便后续分析。
+    _write_log_section(log_file, "local_environment", json.dumps(local_env, ensure_ascii=False, indent=2))
+    # 如果检测结果显示端口不可达，则在控制台给出提示。
+    reachability = local_env.get("port_reachability", "unknown")
+    if reachability != "reachable":
+        print("\n[remote_exec] ⚠️ 本地端口检测结果提示连接可能受限，请检查网络或防火墙。")
+    # 根据错误标签决定是否触发远端诊断脚本。
+    if error_label in {"timeout", "noroute", "refused", "network_unreachable"}:
+        diagnose_result = _run_remote_diagnose(
+            user=user,
+            host=host,
+            port=port,
+            keyfile=keyfile,
+            script_path=remote_script,
+            log_file=log_file,
+        )
+        # 根据返回值在终端输出执行情况摘要。
+        if diagnose_result.get("ran") == "true":
+            print("\n[remote_exec] 已尝试远端诊断脚本，请查看日志了解详细输出。")
+            if diagnose_result.get("returncode") != "0":
+                print(
+                    "[remote_exec] ⚠️ 远端诊断脚本返回非零退出码，可能需要手动登录进一步排查。"
+                )
+        else:
+            print("\n[remote_exec] ⚠️ 未能调用远端诊断脚本：")
+            print(f"  {diagnose_result.get('error', '未知错误')}")
+    # 在控制台提示日志保存位置，方便用户查看详细报告。
+    print(f"\n📁 详细日志已保存：{log_file}")
+    # 返回执行摘要供调用方在需要时进一步处理。
+    return {
+        "ok": "true" if proc.returncode == 0 else "false",
+        "error": error_label,
+        "log_file": str(log_file),
+    }
 
 
 def _remote_command_available(ssh_args: Sequence[str], command: str) -> bool:
