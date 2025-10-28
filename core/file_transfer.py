@@ -131,6 +131,17 @@ def _format_local_path_for_rsync(local_dir: Path) -> str:
     return path_str
 
 
+def _format_local_path_for_scp(local_path: Path) -> str:
+    """返回用于 scp 命令的本地路径，避免 Windows 平台的 /cygdrive 转换。"""
+
+    # Windows 下的原生命令行工具（例如 OpenSSH for Windows）不识别
+    # /cygdrive 前缀，因此直接传递标准文件系统路径即可。其他平台沿用
+    # POSIX 形式的字符串表示。
+    if sys.platform.startswith("win"):
+        return str(local_path)
+    return str(local_path)
+
+
 # 定义一个辅助函数，用于构造带 bash -lc 的远端命令并执行。
 def _execute_remote(user: str, host: str, command: str, keyfile: Optional[str]) -> Dict[str, object]:
     # 先拼接 bash -lc 包装层，保证能够执行复合命令。
@@ -384,8 +395,8 @@ def upload_local_to_remote(
     ]
     # 若配置了密钥文件则同样传递给 scp。
     if keyfile:
-        scp_key = formatted_keyfile or keyfile
-        scp_args.extend(["-i", scp_key])
+        scp_key_path = Path(keyfile).expanduser().resolve()
+        scp_args.extend(["-i", _format_local_path_for_scp(scp_key_path)])
     # 获取待上传目录中的所有项目，确保多文件复制到同一目标。
     items = sorted(local_dir.iterdir())
     # 当目录为空时提示用户并提前返回。
@@ -394,7 +405,7 @@ def upload_local_to_remote(
         return
     # 将所有文件或子目录追加到 scp 参数中。
     for item in items:
-        scp_args.append(_format_local_path_for_rsync(item))
+        scp_args.append(_format_local_path_for_scp(item))
     # 在参数末尾追加远端目标目录。
     scp_args.append(remote_target)
     # 输出最终命令摘要供排查使用。
