@@ -85,7 +85,7 @@ VULTRagent/
 - **本地检测**：程序启动时会自动调用 `ensure_local_rsync` 检查本地环境是否存在 `rsync`。若已安装会打印版本信息；若缺失则根据系统类型给出安装指引。对于 Linux 与 macOS，终端会额外提供 `sudo apt update && sudo apt install -y rsync` 的自动安装选项，并实时输出 `[CHECK]`、`[INSTALL]`、`[OK]`、`[FAIL]` 等提示。
 - **远端检测**：在确认本地环境后，CLI 会询问是否检测远端 `rsync`。用户可输入远端用户名、主机地址与可选私钥路径；若远端缺少 `rsync`，可在终端输入 `y` 触发自动安装。安装命令为：
   ```bash
-  sudo apt-get update -y && sudo apt-get install -y rsync
+  sudo apt-get update && sudo apt-get install -y rsync
   ```
   整个流程同样会输出详细的 `[CHECK]`、`[INSTALL]`、`[OK]`、`[FAIL]` 日志，并在成功后再次获取远端版本号以确认安装结果。
 - **功能依赖**：`rsync` 是上传、下载以及日志镜像的核心工具。本地与远端任一侧缺失都会导致文件同步能力受限，因此建议首次运行程序时完成上述检查流程。

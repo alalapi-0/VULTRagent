@@ -23,7 +23,7 @@ if ! command -v rsync &>/dev/null; then
         # 提示开始安装 rsync。
         echo "[INSTALL] 开始安装 rsync..."
         # 依次执行 apt-get update 与 apt-get install。
-        if sudo apt-get update -y && sudo apt-get install -y rsync; then
+        if sudo apt-get update && sudo apt-get install -y rsync; then
             # 安装成功后打印 rsync 版本信息。
             echo "[OK] rsync 安装成功：$(rsync --version | head -n1)"
         else
