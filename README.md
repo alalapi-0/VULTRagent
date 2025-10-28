@@ -233,12 +233,15 @@ STATUS:OVERALL:FAIL:环境部署与检查完成
   - `git.repo_url`：支持 SSH（推荐部署密钥）或 HTTPS；
   - `git.branch`：目标分支名，若不存在将提示 `branch not found`；
   - `git.prefer_https`：当值为 `true` 时会将 SSH 地址自动转换为 HTTPS，适合公共仓库或缺少 SSH 密钥的场景；
+  - `git.local_repo_dir`：指向本地 ASR 仓库路径，菜单 6 会先执行 `git fetch`/`git pull`，失败将终止远端部署；
   - `remote.project_dir`：远端部署目录，脚本会自动创建并切换至该目录。
 - **兼容性与安全建议**：
   - 使用 SSH 克隆时建议为目标仓库配置只读 Deploy Key；
   - 使用 HTTPS 克隆时需确保远端已配置 `git-credential`（可与 Hugging Face 的 `--add-to-git-credential` 说明相同处理）；
   - 若仓库包含子模块，确保主仓库与子模块均可访问；
   - 安装 `git-lfs` 后记得执行 `git lfs install`（菜单 5 会自动处理），否则大文件无法同步。
+
+若配置了 `git.local_repo_dir`，CLI 会在远端部署前同步更新本地仓库，避免向服务器推送过期代码；任何更新失败都会直接阻止后续远端流程。
 
 运行菜单 6 后，终端会按照 `[1/6] ensure project_dir` → `[6/6] summarize repository` 的顺序输出步骤，并实时转发远端 `git` 日志。示例输出：
 

@@ -35,6 +35,89 @@ from core.remote_exec import run_ssh_command
 console = Console()
 
 
+# 定义一个辅助函数，用于在本地更新 ASR 仓库以保持最新状态。
+def update_local_repo(local_dir: str, branch: str) -> Dict[str, object]:
+    """Update the local ASR repository before deploying to the remote host."""
+    messages: List[str] = []
+    result: Dict[str, object] = {
+        "ok": False,
+        "path": local_dir,
+        "branch": branch,
+        "commit": "",
+        "messages": messages,
+    }
+    if not local_dir:
+        messages.append("local_repo_dir 未配置")
+        return result
+    repo_path = Path(local_dir).expanduser()
+    if not repo_path.exists():
+        messages.append(f"本地仓库目录不存在：{repo_path}")
+        return result
+    if not (repo_path / ".git").exists():
+        messages.append(f"目标目录不是 Git 仓库：{repo_path}")
+        return result
+    console.print(f"[blue][file_transfer] 更新本地仓库 {repo_path}（分支 {branch}）。[/blue]")
+    try:
+        fetch_proc = subprocess.run(
+            ["git", "-C", str(repo_path), "fetch", "--all", "--prune"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        messages.append("未检测到 git 可执行文件，请在本地安装 git。")
+        return result
+    if fetch_proc.returncode != 0:
+        messages.append("git fetch 执行失败，请检查网络连接或凭据。")
+        messages.append(fetch_proc.stderr.strip() or fetch_proc.stdout.strip())
+        return result
+    checkout_proc = subprocess.run(
+        ["git", "-C", str(repo_path), "checkout", branch],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if checkout_proc.returncode != 0:
+        messages.append("git checkout 执行失败，请确认分支存在且无本地冲突。")
+        messages.append(checkout_proc.stderr.strip() or checkout_proc.stdout.strip())
+        return result
+    pull_proc = subprocess.run(
+        ["git", "-C", str(repo_path), "pull", "--ff-only", "origin", branch],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if pull_proc.returncode != 0:
+        messages.append("git pull 执行失败，请手动解决冲突后重试。")
+        messages.append(pull_proc.stderr.strip() or pull_proc.stdout.strip())
+        return result
+    status_proc = subprocess.run(
+        ["git", "-C", str(repo_path), "status", "-sb"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if status_proc.stdout:
+        messages.append(f"git status:\n{status_proc.stdout.strip()}")
+    commit_proc = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--short", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if commit_proc.returncode != 0:
+        messages.append("无法获取当前提交哈希。")
+        messages.append(commit_proc.stderr.strip() or commit_proc.stdout.strip())
+        return result
+    commit_hash = commit_proc.stdout.strip().splitlines()[-1] if commit_proc.stdout else ""
+    result["commit"] = commit_hash
+    result["ok"] = True
+    console.print(
+        f"[green][file_transfer] 本地仓库已更新至 commit {commit_hash or 'UNKNOWN'}。[/green]"
+    )
+    return result
+
+
 # 定义一个辅助函数，用于在远端幂等地创建项目、音频与输出目录。
 def ensure_remote_io_dirs(
     user: str,

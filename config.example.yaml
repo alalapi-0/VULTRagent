@@ -19,6 +19,7 @@ git:
   repo_url: "https://github.com/yourname/your-asr-repo.git"
   branch: "main"
   prefer_https: true         # 公共仓库推荐启用，私有仓库可设为 false 使用 SSH
+  local_repo_dir: ""        # 指向本地 ASR 仓库的路径，部署前会自动 git pull
 
 asr:
   entry: "asr_quickstart.py"
