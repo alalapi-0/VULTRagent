@@ -329,11 +329,19 @@ def upload_local_to_remote(
         "-o",
         "UserKnownHostsFile=/dev/null",
     ]
-    # 如果提供了密钥文件，则追加 -i 选项。
+    formatted_keyfile: Optional[str] = None
     if keyfile:
-        ssh_parts.extend(["-i", keyfile])
-    # 将 SSH 命令拼接成字符串，并对每个片段进行 shell 转义。
-    ssh_command = " ".join(shlex.quote(part) for part in ssh_parts)
+        # 在 Windows 平台上需要将路径转换为 /cygdrive/x 形式，避免 ssh 无法识别。
+        formatted_keyfile = _format_local_path_for_rsync(
+            Path(keyfile).expanduser().resolve()
+        )
+        ssh_parts.extend(["-i", formatted_keyfile])
+
+    # 将 SSH 命令拼接成字符串，根据平台采用合适的转义方式。
+    if os.name == "nt":
+        ssh_command = subprocess.list2cmdline(ssh_parts)
+    else:
+        ssh_command = " ".join(shlex.quote(part) for part in ssh_parts)
     # 当检测到 rsync 可用时优先使用，以获得增量与进度显示能力。
     if rsync_path:
         console.print("[green][file_transfer] 检测到 rsync，使用 rsync -avz --progress 进行同步。[/green]")
@@ -349,11 +357,17 @@ def upload_local_to_remote(
         ]
         # 输出命令摘要以便用户复现，密钥路径不会包含敏感信息。
         console.print(f"[cyan][file_transfer] 执行命令：{' '.join(rsync_args)}[/cyan]")
-        # 启动 rsync 并在失败时抛出异常，由调用方捕获并提示。
-        subprocess.run(rsync_args, check=True)
-        # 成功后告知用户上传完成。
-        console.print("[green][file_transfer] rsync 上传完成。[/green]")
-        return
+        try:
+            subprocess.run(rsync_args, check=True)
+        except subprocess.CalledProcessError as exc:
+            console.print(
+                "[yellow][file_transfer] rsync 上传失败，将自动降级为 scp。"
+                f" (退出码: {exc.returncode})[/yellow]"
+            )
+        else:
+            # 成功后告知用户上传完成。
+            console.print("[green][file_transfer] rsync 上传完成。[/green]")
+            return
     # 若 rsync 不可用则打印降级提示。
     console.print("[yellow][file_transfer] 未检测到 rsync，降级使用 scp -r 批量上传，性能较差。[/yellow]")
     # 构建 scp 参数，保留时间戳并递归复制。
@@ -370,7 +384,8 @@ def upload_local_to_remote(
     ]
     # 若配置了密钥文件则同样传递给 scp。
     if keyfile:
-        scp_args.extend(["-i", keyfile])
+        scp_key = formatted_keyfile or keyfile
+        scp_args.extend(["-i", scp_key])
     # 获取待上传目录中的所有项目，确保多文件复制到同一目标。
     items = sorted(local_dir.iterdir())
     # 当目录为空时提示用户并提前返回。
@@ -379,7 +394,7 @@ def upload_local_to_remote(
         return
     # 将所有文件或子目录追加到 scp 参数中。
     for item in items:
-        scp_args.append(str(item))
+        scp_args.append(_format_local_path_for_rsync(item))
     # 在参数末尾追加远端目标目录。
     scp_args.append(remote_target)
     # 输出最终命令摘要供排查使用。
