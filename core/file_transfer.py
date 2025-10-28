@@ -121,6 +121,71 @@ def _execute_remote(user: str, host: str, command: str, keyfile: Optional[str]) 
     return {"returncode": result.returncode, "stdout": result.stdout, "args": result.args}
 
 
+def _bootstrap_existing_repo(
+    *,
+    user: str,
+    host: str,
+    project_dir: str,
+    repo_url: str,
+    branch: str,
+    keyfile: Optional[str],
+    shallow: bool,
+) -> Dict[str, object]:
+    """在已存在的目录中初始化 Git 仓库。
+
+    当项目目录预先创建了 audio/output 等子目录时，直接执行
+    ``git clone <repo> .`` 会因为目录非空而失败。该函数尝试在原位
+    初始化仓库并拉取指定分支，以兼容这类预初始化目录。
+    """
+
+    messages: List[str] = []
+    commands = [
+        f"cd {_quote(project_dir)} && git init",
+        # 允许目录里已经存在名为 origin 的 remote，移除失败也不应终止流程。
+        f"cd {_quote(project_dir)} && (git remote remove origin || true)",
+        f"cd {_quote(project_dir)} && git remote add origin {_quote(repo_url)}",
+    ]
+
+    fetch_parts = [
+        "cd",
+        _quote(project_dir),
+        "&&",
+        "git",
+        "fetch",
+        "origin",
+        _quote(branch),
+    ]
+    if shallow:
+        fetch_parts.extend(["--depth", "1"])
+    commands.append(" ".join(fetch_parts))
+
+    # checkout -B 可以在本地分支不存在时创建它，并强制对齐到远端分支。
+    commands.append(
+        " ".join(
+            [
+                "cd",
+                _quote(project_dir),
+                "&&",
+                "git",
+                "checkout",
+                "-B",
+                _quote(branch),
+                _quote(f"origin/{branch}"),
+            ]
+        )
+    )
+
+    for command in commands:
+        result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
+        if result["returncode"] != 0:
+            messages.append(
+                f"命令执行失败：{command}. 返回码 {result['returncode']}"
+            )
+            return {"ok": False, "messages": messages}
+
+    return {"ok": True, "messages": ["已在现有目录中初始化 Git 仓库。"]}
+
+
 # 定义辅助函数，从仓库地址中解析出 SSH 主机名，便于写入 known_hosts。
 def _extract_repo_host(repo_url: str) -> Optional[str]:
     if not repo_url:
@@ -822,13 +887,30 @@ def deploy_repo(
         clone_cmd = " ".join(clone_parts)
         clone_result = _execute_remote(user=user, host=host, command=clone_cmd, keyfile=keyfile)
         if clone_result["returncode"] != 0:
-            # 记录失败原因并返回。
-            messages.append("git clone 执行失败，请确认仓库地址与分支存在。")
-            return result_payload
-        # 标记此次操作使用了浅克隆。
-        result_payload["used_shallow"] = shallow
-        # clone 完成后需要刷新 has_git 状态。
-        has_git = True
+            # 当目录已存在音频/输出等子目录时，git clone 会因为目录非空而失败。
+            fallback = _bootstrap_existing_repo(
+                user=user,
+                host=host,
+                project_dir=normalized_dir,
+                repo_url=repo_url,
+                branch=branch,
+                keyfile=keyfile,
+                shallow=shallow,
+            )
+            if not fallback.get("ok"):
+                # 记录失败原因并返回。
+                messages.append("git clone 执行失败，请确认仓库地址与分支存在。")
+                messages.extend(fallback.get("messages", []))
+                return result_payload
+            messages.extend(fallback.get("messages", []))
+            if shallow:
+                result_payload["used_shallow"] = True
+            has_git = True
+        else:
+            # 标记此次操作使用了浅克隆。
+            result_payload["used_shallow"] = shallow
+            # clone 完成后需要刷新 has_git 状态。
+            has_git = True
     # 若仓库仍不存在 .git 目录，则无法继续。
     if not has_git:
         # 记录失败原因。
