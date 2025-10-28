@@ -566,8 +566,11 @@ def _run_rsync_download(
     # 当提供了过滤模式时，使用 include/exclude 组合实现匹配。
     if pattern:
         rsync_args.extend(["--include", "*/", "--include", pattern, "--exclude", "*"])
-    # 将远端源路径与本地目标路径追加到参数列表。
-    rsync_args.extend([remote_target, f"{str(local_dir)}/"])
+    # 将远端源路径与本地目标路径追加到参数列表。为了兼容 Windows
+    # 平台的 rsync，我们需要将本地路径转换为 /cygdrive/x 形式，避免
+    # 诸如 ``E:\`` 这类带冒号的盘符被误判为“远端”参数。
+    formatted_local_dir = _format_local_path_for_rsync(local_dir)
+    rsync_args.extend([remote_target, f"{formatted_local_dir}/"])
     # 输出命令摘要帮助用户调试。
     console.print(f"[cyan][file_transfer] 执行命令：{' '.join(rsync_args)}[/cyan]")
     # 执行 rsync 并在失败时抛出异常。
