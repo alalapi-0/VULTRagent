@@ -645,10 +645,18 @@ def download_with_retry(
         "UserKnownHostsFile=/dev/null",
     ]
     # 若提供了密钥文件则追加。
+    formatted_keyfile: Optional[str] = None
     if keyfile:
-        ssh_parts.extend(["-i", keyfile])
+        # 在 Windows 平台上，ssh/rsync 更倾向于识别 /cygdrive 风格的路径。
+        formatted_keyfile = _format_local_path_for_rsync(
+            Path(keyfile).expanduser().resolve()
+        )
+        ssh_parts.extend(["-i", formatted_keyfile])
     # 将 SSH 参数拼接为字符串，保持逐项引用安全。
-    ssh_command = " ".join(shlex.quote(part) for part in ssh_parts)
+    if os.name == "nt":
+        ssh_command = subprocess.list2cmdline(ssh_parts)
+    else:
+        ssh_command = " ".join(shlex.quote(part) for part in ssh_parts)
     # 计算允许的最大尝试次数（含首次尝试）。
     max_attempts = max(retries, 0) + 1
     # 逐次尝试下载直到成功或耗尽次数。
