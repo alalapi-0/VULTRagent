@@ -354,6 +354,7 @@ def upload_local_to_remote(
     else:
         ssh_command = " ".join(shlex.quote(part) for part in ssh_parts)
     # 当检测到 rsync 可用时优先使用，以获得增量与进度显示能力。
+    rsync_failed = False
     if rsync_path:
         console.print("[green][file_transfer] 检测到 rsync，使用 rsync -avz --progress 进行同步。[/green]")
         # 构造 rsync 参数列表，确保末尾带有斜杠以复制目录内容。
@@ -375,12 +376,16 @@ def upload_local_to_remote(
                 "[yellow][file_transfer] rsync 上传失败，将自动降级为 scp。"
                 f" (退出码: {exc.returncode})[/yellow]"
             )
+            rsync_failed = True
         else:
             # 成功后告知用户上传完成。
             console.print("[green][file_transfer] rsync 上传完成。[/green]")
             return
-    # 若 rsync 不可用则打印降级提示。
-    console.print("[yellow][file_transfer] 未检测到 rsync，降级使用 scp -r 批量上传，性能较差。[/yellow]")
+    # 根据 rsync 可用性或执行结果打印降级提示。
+    if not rsync_path:
+        console.print("[yellow][file_transfer] 未检测到 rsync，降级使用 scp -r 批量上传，性能较差。[/yellow]")
+    elif rsync_failed:
+        console.print("[yellow][file_transfer] rsync 未成功，已改用 scp 继续上传。[/yellow]")
     # 构建 scp 参数，保留时间戳并递归复制。
     scp_args = [
         "scp",
