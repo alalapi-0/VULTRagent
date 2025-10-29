@@ -56,6 +56,8 @@ from core.file_transfer import (
     make_local_results_dir,
     rotate_remote_log,
     cleanup_remote_outputs,
+    cleanup_remote_directories,
+    cleanup_remote_logs,
     update_local_repo,
 )
 # 从 core.remote_bootstrap 模块导入远端部署与报告函数。
@@ -1175,6 +1177,8 @@ def handle_cleanup_remote(config: Dict) -> None:
     remote_conf = config.get("remote", {})
     session_name = remote_conf.get("tmux_session", "")
     log_file = remote_conf.get("log_file", "")
+    project_dir = remote_conf.get("project_dir", "")
+    inputs_dir = remote_conf.get("inputs_dir", "")
     outputs_dir = remote_conf.get("outputs_dir", "")
     cleanup_conf = config.get("cleanup", {})
     console.print(
@@ -1215,16 +1219,48 @@ def handle_cleanup_remote(config: Dict) -> None:
         else:
             console.print("[yellow]未配置 remote.log_file，跳过日志轮转。[/yellow]")
     # 根据配置执行 outputs 目录清理。
-    if cleanup_conf.get("remove_remote_outputs"):
+    clear_outputs = bool(cleanup_conf.get("remove_remote_outputs"))
+    raw_clear_logs = cleanup_conf.get("clear_remote_logs")
+    clear_logs = clear_outputs if raw_clear_logs is None else bool(raw_clear_logs)
+    if clear_outputs:
+        cleanup_targets = []
         if outputs_dir:
-            cleanup_remote_outputs(
+            cleanup_targets.append(outputs_dir)
+            alt_output = str(Path(outputs_dir).with_name("out"))
+            if alt_output:
+                cleanup_targets.append(alt_output)
+        if project_dir:
+            cleanup_targets.append(str(Path(project_dir) / "out"))
+        if inputs_dir:
+            cleanup_targets.append(inputs_dir)
+        if cleanup_targets:
+            cleanup_remote_directories(
                 user=ssh_user,
                 host=ip_address,
-                outputs_dir=outputs_dir,
+                directories=cleanup_targets,
                 keyfile=ssh_key_path or None,
             )
         else:
-            console.print("[yellow]未配置 remote.outputs_dir，跳过远端输出清理。[/yellow]")
+            console.print("[yellow]未找到可清理的远端目录，跳过数据清理步骤。[/yellow]")
+    else:
+        console.print(
+            "[yellow]未启用 cleanup.remove_remote_outputs，跳过远端数据清理。[/yellow]"
+        )
+
+    if clear_logs:
+        if log_file:
+            cleanup_remote_logs(
+                user=ssh_user,
+                host=ip_address,
+                log_path=log_file,
+                keyfile=ssh_key_path or None,
+            )
+        else:
+            console.print("[yellow]未配置 remote.log_file，跳过远端日志清理。[/yellow]")
+    elif log_file:
+        console.print(
+            "[yellow]未启用 cleanup.clear_remote_logs，保留远端日志文件。[/yellow]"
+        )
     # 输出总结信息。
     console.print("[blue]清理流程结束，可根据需要重新运行 ASR 或退出程序。[/blue]")
 
