@@ -148,7 +148,7 @@ VULTRagent/
 - `git`：ASR 项目的 Git 仓库地址与默认分支。
 - `asr`：包含 `entry`、`python_bin`、`non_interactive`、`args`（含 `extra` 数组）等字段，用于拼装非交互命令。
 - `transfer`：上传目录（`upload_local_dir`）、回传过滤（`download_glob`）、结果根目录（`results_root`）、重试参数（`retries` / `retry_backoff_sec`）与清单配置（`verify_manifest`、`manifest_name`）。
-- `cleanup`：控制回传后的远端清理，例如 `rotate_remote_logs`、`keep_log_backups` 与 `remove_remote_outputs`。
+- `cleanup`：控制回传后的远端清理，例如 `rotate_remote_logs`、`keep_log_backups`、`remove_remote_outputs`、`remove_remote_inputs` 与 `extra_remote_dirs`。
 - `huggingface`：Round 3 新增，用于控制 token 注入与 CLI 登录行为。
 
 ## 结果回传与目录组织（Round 6）
@@ -174,7 +174,7 @@ VULTRagent/
   - **WSL**：在 Windows 启用 WSL，并在子系统中 `sudo apt install rsync`。
   - **cwRsync**：安装 [cwRsync](https://www.itefix.net/cwrsync) 后在 PowerShell 中调用 `rsync`。若无法安装，请接受 `scp` 降级并关注 README 的差异说明。
 
-回传成功后，若 `cleanup.rotate_remote_logs` 或 `cleanup.remove_remote_outputs` 为 `true`，系统会自动执行相应的远端清理操作，避免日志膨胀或输出目录堆积。日志轮转后的文件名为 `run-YYYYMMDD-HHMMSS.log`，并按照 `keep_log_backups` 保留最近若干份。
+回传成功后，若 `cleanup.rotate_remote_logs` 为 `true` 会执行日志轮转；当 `cleanup.remove_remote_outputs`、`cleanup.remove_remote_inputs` 或 `cleanup.extra_remote_dirs` 配置为非空时，会依次清理 `remote.outputs_dir`、`remote.inputs_dir` 以及额外指定目录（同时会尝试匹配 `out` 等同级别别名），避免日志膨胀或输入输出目录堆积。日志轮转后的文件名为 `run-YYYYMMDD-HHMMSS.log`，并按照 `keep_log_backups` 保留最近若干份。
 
 ## 日志实时镜像到本地（Round 7）
 
@@ -205,11 +205,11 @@ VULTRagent/
 
 ## 停止与清理
 
-菜单 **9. 停止/清理远端任务** 提供一键收尾能力，适用于一次 ASR 任务结束后的善后流程：
+菜单 **11. 停止/清理远端任务** 提供一键收尾能力，适用于一次 ASR 任务结束后的善后流程：
 
 - **检测并停止 tmux 会话**：先通过 `tmux has-session` 判断会话是否存在，存在时调用 `tmux kill-session` 停止后台任务；若会话不存在，会在终端给出提示。
 - **日志轮转**：当 `cleanup.rotate_remote_logs=true` 且配置了 `remote.log_file` 时，当前日志会被重命名为 `run-YYYYMMDD-HHMMSS.log`，随后重新创建空日志文件，并按时间顺序保留最近 `cleanup.keep_log_backups` 份，其余自动删除。
-- **远端输出清理**：`cleanup.remove_remote_outputs=true` 时会清空 `remote.outputs_dir` 内的文件（包括隐藏文件），适合下一轮任务前的归零操作。该步骤默认关闭，建议在确认结果已成功回传后再开启。
+- **远端目录清理**：根据 `cleanup` 配置，可清空 `remote.outputs_dir`、`remote.inputs_dir` 以及 `extra_remote_dirs` 中列出的路径，程序还会在移除输出目录时尝试同步清理同级 `out` 目录，确保下一轮任务前远端环境保持整洁。默认关闭，建议在确认结果已成功回传后再启用。
 
 运行该菜单后，终端会汇总执行的动作，并提示后续可重新上传素材或直接退出。
 
