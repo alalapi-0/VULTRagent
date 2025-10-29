@@ -940,31 +940,57 @@ def rotate_remote_log(user: str, host: str, log_path: str, keep: int, keyfile: O
     return result["returncode"]
 
 
-# 定义一个可选函数用于清空远端输出目录。
+# 定义一个可选函数用于清空指定的远端目录。
+def cleanup_remote_directory(
+    *,
+    user: str,
+    host: str,
+    target_dir: str,
+    keyfile: Optional[str] = None,
+    description: str = "目录",
+) -> int:
+    """清空远端目录中的全部文件（包含隐藏文件），但保留目录本身。"""
+
+    if not target_dir:
+        console.print(
+            f"[yellow][file_transfer] 未提供有效的远端目录，跳过{description}清理。[/yellow]"
+        )
+        return 1
+
+    command = (
+        "set -euo pipefail; "
+        f"DIR={shlex.quote(target_dir)}; "
+        "if [ -d \"$DIR\" ]; then "
+        "shopt -s dotglob nullglob; "
+        "rm -rf \"$DIR\"/*; "
+        "fi"
+    )
+    result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
+    if result["returncode"] == 0:
+        console.print(
+            f"[green][file_transfer] 已清空远端 {description}：{target_dir}。[/green]"
+        )
+    else:
+        console.print(
+            f"[yellow][file_transfer] 清理远端 {description} 失败或目录不存在：{target_dir}。[/yellow]"
+        )
+    return result["returncode"]
+
+
+# 保留兼容接口，复用通用清理逻辑。
 def cleanup_remote_outputs(
     user: str,
     host: str,
     outputs_dir: str,
     keyfile: Optional[str] = None,
 ) -> int:
-    # 构造安全的清理命令，兼顾隐藏文件。
-    command = (
-        "set -euo pipefail; "
-        f"DIR={shlex.quote(outputs_dir)}; "
-        "if [ -d \"$DIR\" ]; then "
-        "shopt -s dotglob nullglob; "
-        "rm -rf \"$DIR\"/*; "
-        "fi"
+    return cleanup_remote_directory(
+        user=user,
+        host=host,
+        target_dir=outputs_dir,
+        keyfile=keyfile,
+        description="outputs 目录",
     )
-    # 调用远端执行函数。
-    result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
-    # 根据返回码打印提示信息。
-    if result["returncode"] == 0:
-        console.print("[green][file_transfer] 已清空远端 outputs 目录。[/green]")
-    else:
-        console.print("[yellow][file_transfer] 清理远端 outputs 目录失败或目录不存在。[/yellow]")
-    # 返回退出码供调用方处理。
-    return result["returncode"]
 
 
 # 定义用于部署或更新远端仓库的核心函数。

@@ -19,7 +19,7 @@ import shlex
 # 导入 pathlib.Path 以便构建跨平台的文件路径。
 from pathlib import Path
 # 导入 typing 模块中的 Callable、Dict 和 List 类型用于类型注解。
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Set, Tuple
 # 导入 requests 库以捕获网络请求异常。
 import requests
 # 导入 typer 库以构建命令行应用。
@@ -55,7 +55,7 @@ from core.file_transfer import (
     print_deploy_summary,
     make_local_results_dir,
     rotate_remote_log,
-    cleanup_remote_outputs,
+    cleanup_remote_directory,
     update_local_repo,
 )
 # 从 core.remote_bootstrap 模块导入远端部署与报告函数。
@@ -83,6 +83,64 @@ STATE_PATH = Path(__file__).resolve().parent / ".state.json"
 DEFAULT_API_BASE = "https://api.vultr.com"
 # 定义全局缓存用于保存最近一次获取的实例列表。
 LAST_INSTANCE_CACHE: List[Dict] = []
+
+
+# 规范化远端目录路径，便于后续去重。
+def _normalize_remote_path(path: str) -> str:
+    cleaned = (path or "").strip()
+    if cleaned in {"", "."}:
+        return ""
+    if cleaned != "/":
+        cleaned = cleaned.rstrip("/")
+    return cleaned or "/"
+
+
+def _collect_cleanup_targets(remote_conf: Dict, cleanup_conf: Dict) -> List[Tuple[str, str]]:
+    """根据配置生成需要清理的远端目录列表。"""
+
+    outputs_dir = (remote_conf.get("outputs_dir") or "").strip()
+    inputs_dir = (remote_conf.get("inputs_dir") or "").strip()
+
+    remove_outputs = bool(cleanup_conf.get("remove_remote_outputs"))
+    remove_inputs = bool(cleanup_conf.get("remove_remote_inputs", remove_outputs))
+    detect_aliases = cleanup_conf.get("detect_output_aliases", True)
+
+    extra_dirs_conf = cleanup_conf.get("extra_remote_dirs", [])
+    extra_dirs: List[str] = []
+    if isinstance(extra_dirs_conf, str):
+        extra_dirs = [
+            item.strip()
+            for item in re.split(r"[;,]", extra_dirs_conf)
+            if item and item.strip()
+        ]
+    elif isinstance(extra_dirs_conf, list):
+        extra_dirs = [str(item).strip() for item in extra_dirs_conf if str(item).strip()]
+
+    targets: List[Tuple[str, str]] = []
+    seen: Set[str] = set()
+
+    def add_target(path: str, label: str) -> None:
+        normalized = _normalize_remote_path(path)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        targets.append((path, label))
+
+    if remove_outputs and outputs_dir:
+        add_target(outputs_dir, "outputs 目录")
+        if detect_aliases:
+            outputs_path = Path(outputs_dir)
+            alias = str(outputs_path.with_name("out"))
+            if alias != outputs_dir:
+                add_target(alias, "out 目录（推导）")
+
+    if remove_inputs and inputs_dir:
+        add_target(inputs_dir, "inputs 目录")
+
+    for extra in extra_dirs:
+        add_target(extra, f"自定义目录：{extra}")
+
+    return targets
 
 
 # 定义一个函数用于安全读取配置文件。
@@ -1130,12 +1188,13 @@ def handle_fetch_results(config: Dict) -> None:
                 )
             else:
                 console.print("[yellow]未配置 remote.log_file，跳过日志轮转。[/yellow]")
-        if cleanup_conf.get("remove_remote_outputs"):
-            cleanup_remote_outputs(
+        for target_dir, label in _collect_cleanup_targets(remote_conf, cleanup_conf):
+            cleanup_remote_directory(
                 user=ssh_user,
                 host=ip_address,
-                outputs_dir=outputs_dir,
+                target_dir=target_dir,
                 keyfile=ssh_key_path or None,
+                description=label,
             )
     else:
         console.print("[yellow]检测到回传存在异常，已跳过远端清理操作。[/yellow]")
@@ -1175,7 +1234,6 @@ def handle_cleanup_remote(config: Dict) -> None:
     remote_conf = config.get("remote", {})
     session_name = remote_conf.get("tmux_session", "")
     log_file = remote_conf.get("log_file", "")
-    outputs_dir = remote_conf.get("outputs_dir", "")
     cleanup_conf = config.get("cleanup", {})
     console.print(
         f"[blue]正在处理 {instance_label} ({ip_address}) 的后台任务与清理操作。[/blue]"
@@ -1214,17 +1272,15 @@ def handle_cleanup_remote(config: Dict) -> None:
             )
         else:
             console.print("[yellow]未配置 remote.log_file，跳过日志轮转。[/yellow]")
-    # 根据配置执行 outputs 目录清理。
-    if cleanup_conf.get("remove_remote_outputs"):
-        if outputs_dir:
-            cleanup_remote_outputs(
-                user=ssh_user,
-                host=ip_address,
-                outputs_dir=outputs_dir,
-                keyfile=ssh_key_path or None,
-            )
-        else:
-            console.print("[yellow]未配置 remote.outputs_dir，跳过远端输出清理。[/yellow]")
+    # 根据配置执行输入/输出目录清理。
+    for target_dir, label in _collect_cleanup_targets(remote_conf, cleanup_conf):
+        cleanup_remote_directory(
+            user=ssh_user,
+            host=ip_address,
+            target_dir=target_dir,
+            keyfile=ssh_key_path or None,
+            description=label,
+        )
     # 输出总结信息。
     console.print("[blue]清理流程结束，可根据需要重新运行 ASR 或退出程序。[/blue]")
 

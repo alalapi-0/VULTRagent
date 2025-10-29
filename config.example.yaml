@@ -45,6 +45,9 @@ transfer:
 
 cleanup:
   remove_remote_outputs: false
+  remove_remote_inputs: null      # 设为 true 清理 remote.inputs_dir，留空时跟随 remove_remote_outputs
+  detect_output_aliases: true     # 清理 outputs_dir 时，额外尝试匹配同级 out 目录
+  extra_remote_dirs: []           # 追加自定义待清理目录，如 ["/home/ubuntu/asr_program/out"]
   rotate_remote_logs: true
   keep_log_backups: 5
 
