@@ -45,6 +45,7 @@ transfer:
 
 cleanup:
   remove_remote_outputs: false
+  clear_remote_logs: null         # 设为 true 可强制清理日志，false 保留，null 随 remove_remote_outputs
   rotate_remote_logs: true
   keep_log_backups: 5
 

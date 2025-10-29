@@ -20,7 +20,7 @@ from fnmatch import fnmatch
 # 导入 pathlib.Path 以处理本地路径的展开与校验。
 from pathlib import Path
 # 导入 typing 模块中的 Dict、List、Optional 以完善类型注解。
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
 # 导入 rich.console.Console 以便在终端呈现彩色输出。
@@ -947,23 +947,83 @@ def cleanup_remote_outputs(
     outputs_dir: str,
     keyfile: Optional[str] = None,
 ) -> int:
-    # 构造安全的清理命令，兼顾隐藏文件。
+    # 保留旧接口，委托给新的批量目录清理函数。
+    return cleanup_remote_directories(
+        user=user,
+        host=host,
+        directories=[outputs_dir],
+        keyfile=keyfile,
+    )
+
+
+def cleanup_remote_directories(
+    *,
+    user: str,
+    host: str,
+    directories: Sequence[str],
+    keyfile: Optional[str] = None,
+) -> int:
+    # 过滤空路径并去重，避免执行无意义的命令。
+    unique_dirs: List[str] = []
+    seen = set()
+    for path in directories:
+        if not path:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_dirs.append(path)
+    if not unique_dirs:
+        console.print("[yellow][file_transfer] 未提供需要清理的远端目录。[/yellow]")
+        return 0
+    dir_list = " ".join(shlex.quote(path) for path in unique_dirs)
     command = (
         "set -euo pipefail; "
-        f"DIR={shlex.quote(outputs_dir)}; "
+        f"for DIR in {dir_list}; do "
         "if [ -d \"$DIR\" ]; then "
-        "shopt -s dotglob nullglob; "
-        "rm -rf \"$DIR\"/*; "
-        "fi"
+        "find \"$DIR\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +; "
+        "fi; "
+        "done"
     )
-    # 调用远端执行函数。
     result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
-    # 根据返回码打印提示信息。
     if result["returncode"] == 0:
-        console.print("[green][file_transfer] 已清空远端 outputs 目录。[/green]")
+        console.print(
+            f"[green][file_transfer] 已清空远端目录内容：{', '.join(unique_dirs)}。[/green]"
+        )
     else:
-        console.print("[yellow][file_transfer] 清理远端 outputs 目录失败或目录不存在。[/yellow]")
-    # 返回退出码供调用方处理。
+        console.print(
+            "[yellow][file_transfer] 清理远端目录时出现问题，请检查路径是否存在。[/yellow]"
+        )
+    return result["returncode"]
+
+
+def cleanup_remote_logs(
+    *,
+    user: str,
+    host: str,
+    log_path: str,
+    keyfile: Optional[str] = None,
+) -> int:
+    if not log_path:
+        console.print("[yellow][file_transfer] 未提供远端日志路径，跳过日志清理。[/yellow]")
+        return 0
+    command = (
+        "set -euo pipefail; "
+        f"LOG={shlex.quote(log_path)}; "
+        "DIR=$(dirname \"$LOG\"); "
+        "BASE=$(basename \"$LOG\"); "
+        "if [ -f \"$LOG\" ]; then rm -f \"$LOG\"; fi; "
+        "shopt -s nullglob; "
+        "PREFIX=${BASE%.*}; "
+        "for FILE in \"$DIR/$PREFIX\"-*.log \"$DIR/$BASE\"-*.log; do "
+        "if [ -f \"$FILE\" ]; then rm -f \"$FILE\"; fi; "
+        "done"
+    )
+    result = _execute_remote(user=user, host=host, command=command, keyfile=keyfile)
+    if result["returncode"] == 0:
+        console.print("[green][file_transfer] 已清理远端日志及缓存文件。[/green]")
+    else:
+        console.print("[yellow][file_transfer] 清理远端日志缓存时遇到问题。[/yellow]")
     return result["returncode"]
 
 
